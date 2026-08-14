@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Publishes a local HTML file to the docs Worker and prints its public link-only URL.
+#
+#   publish-doc ~/writeups/pricing.html      publish or update, prints the URL
+#   publish-doc --unpublish ~/writeups/x.html  revoke the link
+#   publish-doc --list                       show every published doc
+#
+# A doc keeps its slug across re-publishes, so a link already sent to a client
+# keeps working and shows the latest version.
+set -euo pipefail
+
+BASE_URL="${DOCS_BASE_URL:-https://docs.santiu.workers.dev}"
+MANIFEST="${DOCS_MANIFEST:-$HOME/.config/docs-publish/manifest.tsv}"
+KEYCHAIN_SERVICE="docs-upload-token"
+
+die() { echo "publish-doc: $*" >&2; exit 1; }
+
+token() {
+	security find-generic-password -s "$KEYCHAIN_SERVICE" -w 2>/dev/null ||
+		die "no upload token in the keychain. Add it with:
+  security add-generic-password -s $KEYCHAIN_SERVICE -a \"\$USER\" -w '<token>'"
+}
+
+# Slug for this file, created on first publish and reused forever after.
+slug_for() {
+	local path="$1" existing
+	mkdir -p "$(dirname "$MANIFEST")"
+	touch "$MANIFEST"
+	existing="$(awk -F'\t' -v p="$path" '$1 == p { print $2 }' "$MANIFEST" | head -1)"
+	if [ -n "$existing" ]; then
+		echo "$existing"
+		return
+	fi
+	local fresh
+	fresh="$(openssl rand -hex 11)"
+	printf '%s\t%s\n' "$path" "$fresh" >>"$MANIFEST"
+	echo "$fresh"
+}
+
+case "${1:---help}" in
+--list)
+	[ -s "$MANIFEST" ] || die "nothing published yet"
+	awk -F'\t' -v base="$BASE_URL" '{ printf "%s/%s  %s\n", base, $2, $1 }' "$MANIFEST"
+	;;
+--unpublish)
+	file="${2:?usage: publish-doc --unpublish <file.html>}"
+	path="$(cd "$(dirname "$file")" && pwd)/$(basename "$file")"
+	slug="$(awk -F'\t' -v p="$path" '$1 == p { print $2 }' "$MANIFEST" | head -1)"
+	[ -n "$slug" ] || die "$path was never published"
+	curl -fsS -X DELETE -H "authorization: Bearer $(token)" "$BASE_URL/$slug" >/dev/null
+	# Drop the mapping so a future publish gets a new, un-shared slug. grep exits 1
+	# when it filters out the last remaining line, so its status is not an error here.
+	grep -v -F "$(printf '%s\t%s' "$path" "$slug")" "$MANIFEST" >"$MANIFEST.tmp" || true
+	mv "$MANIFEST.tmp" "$MANIFEST"
+	echo "revoked $BASE_URL/$slug"
+	;;
+--help | -h)
+	sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+	;;
+*)
+	file="$1"
+	[ -f "$file" ] || die "no such file: $file"
+	path="$(cd "$(dirname "$file")" && pwd)/$(basename "$file")"
+	slug="$(slug_for "$path")"
+	title="$(basename "$path" .html)"
+	curl -fsS -X PUT \
+		-H "authorization: Bearer $(token)" \
+		-H "content-type: text/html; charset=utf-8" \
+		-H "x-doc-title: $title" \
+		--data-binary "@$path" \
+		"$BASE_URL/$slug" >/dev/null
+	echo "$BASE_URL/$slug"
+	;;
+esac

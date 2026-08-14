@@ -1,0 +1,5 @@
+# workerd is the Workers runtime binary and esbuild the bundler; both need their
+# postinstall scripts to unpack a platform binary.
+allowBuilds:
+  esbuild: true
+  workerd: true
