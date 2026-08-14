@@ -1,0 +1,13 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "docs",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-01",
+	"observability": { "enabled": true },
+	"kv_namespaces": [
+		{
+			"binding": "DOCS",
+			"id": "b6a7b0eec5314dcaa31a99942f2c1c24"
+		}
+	]
+}
