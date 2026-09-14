@@ -4,7 +4,7 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2026-08-01",
 	"observability": { "enabled": true },
-	"d1_databases": [{ "binding": "REVIEWS", "database_name": "docs-reviews", "migrations_dir": "migrations" }],
+	"d1_databases": [{ "binding": "REVIEWS", "database_name": "docs-reviews", "database_id": "d969f891-02a1-4ca9-bc9a-08c2fb447f11", "migrations_dir": "migrations" }],
 	"rules": [{ "type": "Text", "globs": ["**/*.txt"], "fallthrough": true }],
 	"kv_namespaces": [
 		{
