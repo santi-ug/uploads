@@ -25,9 +25,9 @@ export async function readText(request: Request, limit: number) {
     throw new HttpError(400, 'Invalid request body.')
   } finally { reader.releaseLock() }
 }
-export async function readJson(request: Request): Promise<unknown> {
+export async function readJson(request: Request, limit = 12_000): Promise<unknown> {
   if (!request.headers.get('content-type')?.startsWith('application/json')) throw new HttpError(415, 'Use application/json.')
-  const text = await readText(request, 12_000)
+  const text = await readText(request, limit)
   try { return JSON.parse(text) } catch { throw new HttpError(400, 'Invalid JSON.') }
 }
 export function record(value: unknown): Record<string, unknown> {

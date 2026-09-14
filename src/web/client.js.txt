@@ -7,11 +7,14 @@
   const endpoint = '/' + slug + '/comments';
   const draftKey = 'review-draft:' + slug;
   let data = { revision: '', open: false, comments: [] };
-  let frameRevision = '', commenting = false, busy = false, loading = false;
+  let frameRevision = '', busy = false, loading = false, tool = 'read', viewing = null, loadingSnapshot = false;
+  let markup = null;
+  const popover = byId('compose-popover');
   let anchor = { quote: '', selector: '' }, parentId = null, requestId = crypto.randomUUID();
   let returnFocus = byId('show');
   function saveDraft() {
-    try { localStorage.setItem(draftKey, JSON.stringify({ name: name.value, body: body.value, anchor, parentId, requestId, revision: frameRevision })); } catch { /* Posting works without browser storage. */ }
+    try { localStorage.setItem(draftKey, JSON.stringify({ name: name.value, body: body.value, anchor, markup, parentId, requestId, revision: draftRevision || frameRevision })); } catch { /* Posting works without browser storage. */ }
+    byId('draft').hidden = !body.value || !popover.hidden || Boolean(viewing);
   }
   let draftRevision = '';
   try {
@@ -22,9 +25,11 @@
       if (typeof draft.parentId === 'string') parentId = draft.parentId;
       if (typeof draft.requestId === 'string') requestId = draft.requestId;
       if (typeof draft.revision === 'string') draftRevision = draft.revision;
+      markup = safeMarkup(draft.markup);
     }
   } catch { /* A missing or invalid draft never prevents reading. */ }
   function openPanel(focus = false) {
+    if (!popover.hidden) closeComposer();
     if (panel.hidden) {
       const active = document.activeElement;
       returnFocus = active instanceof HTMLElement && active !== document.body && !panel.contains(active) ? active : byId('show');
@@ -36,25 +41,58 @@
     panel.hidden = true; document.body.classList.remove('panel-open'); byId('show').setAttribute('aria-expanded', 'false');
     returnFocus.focus();
   }
-  function setMode(enabled) {
-    commenting = enabled && data.open;
-    byId('mode').setAttribute('aria-pressed', String(commenting));
-    byId('instruction').hidden = !commenting;
-    frame.contentWindow?.postMessage({ type: 'review-mode', enabled: commenting }, '*');
+  function safeMarkup(value) {
+    if (!value || value.version !== 1 || !value.viewport || !Array.isArray(value.marks) || !value.marks.length || value.marks.length > 32) return null;
+    const finite = (n, min, max) => typeof n === 'number' && Number.isFinite(n) && n >= min && n <= max;
+    if (!finite(value.viewport.width, 240, 8000) || !finite(value.viewport.height, 160, 8000)) return null;
+    let points = 0;
+    for (const m of value.marks) {
+      if (!m || typeof m !== 'object') return null;
+      if (m.kind === 'stroke') {
+        if (!Array.isArray(m.points) || m.points.length < 2 || m.points.length > 512) return null;
+        points += m.points.length;
+        if (points > 2048 || !m.points.every(p => p && finite(p.x, 0, 200000) && finite(p.y, 0, 200000))) return null;
+      } else if (!['rect', 'ellipse'].includes(m.kind) || !finite(m.x, 0, 200000) || !finite(m.y, 0, 200000) || !finite(m.width, 1, 20000) || !finite(m.height, 1, 20000)) return null;
+    }
+    return value;
+  }
+  const tell = message => frame.contentWindow?.postMessage(message, '*');
+  function clearMarks() {
+    markup = null; tell({ type: 'review-clear' }); sizeFrame(null);
+    for (const action of ['undo', 'redo']) document.querySelector('[data-tool="' + action + '"]').disabled = true;
+  }
+  function sizeFrame(value) {
+    frame.style.width = value ? value.viewport.width + 'px' : '';
+    frame.style.height = value ? value.viewport.height + 'px' : '';
+    frame.style.minWidth = value ? value.viewport.width + 'px' : '';
+  }
+  function setTool(next) {
+    tool = data.open && !viewing && !busy ? next : 'read';
+    for (const button of document.querySelectorAll('[data-tool][aria-pressed]')) button.setAttribute('aria-pressed', String(button.dataset.tool === tool));
+    tell({ type: 'review-tool', tool, allowed: data.open && !viewing && !busy });
+    const hints = { read: 'Select text to comment. Read also lets you scroll.', select: 'Tap an element, then Comment beside it.', rect: 'Drag a region, then Comment beside it.', ellipse: 'Drag to circle anything, including images.', stroke: 'Draw over the page, then Comment beside the marks.', erase: 'Tap a mark to remove it. Undo restores it.' };
+    byId('instruction').textContent = hints[tool];
+  }
+  function closeComposer() { popover.hidden = true; saveDraft(); returnFocus.focus(); }
+  function openComposer(position) {
+    popover.hidden = false; byId('draft').hidden = true;
+    const r = frame.getBoundingClientRect();
+    popover.style.left = Math.max(12, Math.min(innerWidth - 372, r.left + (position?.x || 24))) + 'px';
+    popover.style.top = Math.max(70, Math.min(innerHeight - popover.offsetHeight - 96, r.top + (position?.y || 60))) + 'px';
+    if (!matchMedia('(pointer:coarse)').matches) body.focus({ preventScroll: true });
   }
   function targetLabel() {
     byId('composer-title').textContent = parentId ? 'Reply' : 'New comment';
-    byId('target').textContent = anchor.quote;
-    byId('target').hidden = !anchor.quote;
-    byId('clear-target').hidden = !anchor.quote && !parentId;
+    byId('target').textContent = anchor.quote || (markup ? markup.marks.length + ' visual marks' : '');
+    byId('target').hidden = !anchor.quote && !markup;
+    byId('clear-target').hidden = !anchor.quote && !parentId && !markup;
   }
-  function selectTarget(next, thread = null) {
+  function selectTarget(next, thread = null, position, nextMarkup = markup) {
     if (busy) return;
     if (body.value.trim() && (thread !== parentId || anchor.selector !== next.selector) && !confirm('Move your current draft to this comment target?')) return;
-    anchor = next; parentId = thread; requestId = crypto.randomUUID(); draftRevision = frameRevision;
-    targetLabel(); saveDraft(); openPanel(); form.scrollIntoView({ block: 'nearest' });
-    // Keep the phone keyboard closed until the reviewer taps the comment field.
-    setMode(false);
+    anchor = next; markup = nextMarkup; parentId = thread; requestId = crypto.randomUUID(); draftRevision = frameRevision;
+    if (!nextMarkup) clearMarks();
+    targetLabel(); saveDraft(); if (!panel.hidden) closePanel(); openComposer(position); setTool('read');
   }
   const element = (tag, text, className) => {
     const node = document.createElement(tag); node.textContent = text;
@@ -66,10 +104,11 @@
   function render() {
     name.disabled = busy; body.disabled = busy;
     byId('review-state').textContent = data.open ? 'Review open · comments are saved online.' : 'Review closed · the document and comments remain readable.';
-    byId('post').disabled = busy || !data.open || !frameRevision;
-    byId('mode').disabled = !data.open;
-    byId('new').disabled = !data.open;
-    if (!data.open) setMode(false);
+    byId('post').disabled = busy || !data.open || !frameRevision || Boolean(viewing) || (!parentId && Boolean(draftRevision) && draftRevision !== frameRevision);
+    for (const button of document.querySelectorAll('[data-tool]:not([data-tool="read"]):not([data-tool="undo"]):not([data-tool="redo"])')) button.disabled = !data.open || Boolean(viewing) || busy;
+    byId('new').disabled = !data.open || Boolean(viewing) || busy;
+    if (!data.open || viewing || busy) for (const action of ['undo', 'redo']) document.querySelector('[data-tool="' + action + '"]').disabled = true;
+    if (!data.open) setTool('read');
     const roots = data.comments.filter(comment => comment.parent_id === null);
     byId('count').textContent = roots.filter(comment => comment.status === 'open').length;
     const list = byId('threads'); list.replaceChildren();
@@ -84,8 +123,9 @@
         row.append(element('div', reply.name + ' · ' + new Date(reply.created_at).toLocaleString(), 'meta'), element('p', reply.body, 'comment-body')); article.append(row);
       }
       const actions = element('div', '', 'thread-actions');
-      if (data.open) actions.append(button('Reply', () => selectTarget({ quote: comment.quote, selector: comment.selector }, comment.id)));
-      if (comment.selector && comment.revision === frameRevision) actions.append(button('Show in document', () => {
+      if (data.open && !viewing) actions.append(button('Reply', () => selectTarget({ quote: comment.quote, selector: comment.selector }, comment.id, undefined, null)));
+      if (comment.markup) actions.append(button('View markup', () => viewMarkup(comment)));
+      else if (comment.selector && comment.revision === frameRevision) actions.append(button('Show in document', () => {
         frame.contentWindow?.postMessage({ type: 'review-reveal', ...comment }, '*');
         if (matchMedia('(max-width:760px)').matches) closePanel();
       }));
@@ -106,19 +146,26 @@
       const response = await fetch(endpoint, { cache: 'no-store' });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not load comments.');
-      data = result; render();
+      const changedAccess = data.open !== result.open;
+      data = result; if (changedAccess) setTool(tool); render();
     } catch (error) { byId('review-state').textContent = error.message + ' Use Refresh to retry.'; }
     finally { loading = false; }
   }
   byId('show').addEventListener('click', () => panel.hidden ? openPanel(true) : closePanel());
   byId('close').addEventListener('click', closePanel);
-  byId('mode').addEventListener('click', () => { setMode(!commenting); if (commenting && matchMedia('(max-width:760px)').matches) closePanel(); });
-  byId('new').addEventListener('click', () => selectTarget({ quote: '', selector: '' }));
-  byId('clear-target').addEventListener('click', () => selectTarget({ quote: '', selector: '' }));
+  for (const button of document.querySelectorAll('[data-tool]')) button.addEventListener('click', () => {
+    returnFocus = button;
+    if (['undo', 'redo'].includes(button.dataset.tool)) { tell({ type: 'review-history', action: button.dataset.tool }); return; }
+    if (!popover.hidden) closeComposer(); if (!panel.hidden) closePanel(); setTool(button.dataset.tool);
+  });
+  byId('cancel-compose').addEventListener('click', closeComposer);
+  byId('draft').addEventListener('click', () => { targetLabel(); openComposer(); });
+  byId('new').addEventListener('click', () => selectTarget({ quote: '', selector: '' }, null, undefined, null));
+  byId('clear-target').addEventListener('click', () => { if (confirm('Remove the selected target and marks? Your comment text stays.')) { clearMarks(); anchor = { quote: '', selector: '' }; parentId = null; draftRevision = frameRevision; targetLabel(); saveDraft(); render(); } });
   byId('refresh').addEventListener('click', refresh);
   byId('resolved').addEventListener('change', render);
   form.addEventListener('input', () => { requestId = crypto.randomUUID(); saveDraft(); });
-  addEventListener('keydown', event => { if (event.key === 'Escape') { setMode(false); if (!panel.hidden) closePanel(); } });
+  addEventListener('keydown', event => { if (event.key === 'Escape') { setTool('read'); if (!popover.hidden) closeComposer(); else if (!panel.hidden) closePanel(); } if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !popover.hidden) { event.preventDefault(); form.requestSubmit(); } });
   frame.addEventListener('load', () => frame.contentWindow?.postMessage({ type: 'review-ping' }, '*'));
   addEventListener('message', event => {
     if (event.source !== frame.contentWindow || !event.data || typeof event.data !== 'object') return;
@@ -126,44 +173,72 @@
     if (message.type === 'review-ready' && typeof message.revision === 'string' && /^[a-f0-9]{64}$/.test(message.revision)) {
       frameRevision = message.revision;
       if (typeof message.title === 'string' && message.title.trim()) { byId('title').textContent = message.title.slice(0, 200); document.title = message.title.slice(0, 200) + ' · Review'; }
-      if (draftRevision && draftRevision !== frameRevision && body.value.trim()) {
-        anchor = { quote: '', selector: '' }; parentId = null;
-        status.textContent = 'Draft restored from an earlier version. Select its target again.'; targetLabel();
+      if (viewing) { if (message.revision !== viewing.revision) return; loadingSnapshot = false; tell({ type: 'review-restore', ...viewing, replay: true }); render(); return; }
+      if (draftRevision && draftRevision !== frameRevision && (body.value.trim() || markup)) {
+        status.textContent = 'Earlier-version draft kept. Clear its selection or choose a new target before posting.';
+        sizeFrame(null); targetLabel(); setTool('read'); render(); return;
       }
-      draftRevision = frameRevision; render();
+      draftRevision = frameRevision; sizeFrame(markup); tell({ type: 'review-restore', markup, ...anchor, revision: frameRevision }); setTool(tool); saveDraft();
+      document.querySelector('[data-tool="undo"]').disabled = !markup;
+      render();
     }
-    if (message.type === 'review-target' && commenting && message.revision === frameRevision && typeof message.quote === 'string' && typeof message.selector === 'string') selectTarget({ quote: message.quote.slice(0, 1000), selector: message.selector.slice(0, 500) });
-    if (message.type === 'review-escape') { setMode(false); if (!panel.hidden) closePanel(); }
+    if (message.type === 'review-markup' && !viewing && !busy && message.revision === frameRevision) {
+      const next = safeMarkup(message.markup); if (message.markup && !next) return;
+      markup = next; requestId = crypto.randomUUID(); sizeFrame(markup); saveDraft(); targetLabel();
+      document.querySelector('[data-tool="undo"]').disabled = !message.canUndo;
+      document.querySelector('[data-tool="redo"]').disabled = !message.canRedo;
+    }
+    if (message.type === 'review-target' && data.open && !viewing && message.revision === frameRevision && typeof message.quote === 'string' && typeof message.selector === 'string') {
+      const next = safeMarkup(message.markup); if (message.markup && !next) return;
+      selectTarget({ quote: message.quote.slice(0, 1000), selector: message.selector.slice(0, 500) }, null, message.position, next);
+    }
+    if (message.type === 'review-notice' && typeof message.text === 'string') byId('instruction').textContent = message.text.slice(0, 200);
+    if (message.type === 'review-escape') { setTool('read'); if (!popover.hidden) closeComposer(); else if (!panel.hidden) closePanel(); }
   });
   form.addEventListener('submit', async event => {
-    event.preventDefault(); if (busy || !data.open) return;
-    busy = true; render(); status.textContent = 'Posting…'; saveDraft();
+    event.preventDefault(); if (busy || !data.open || viewing || (!parentId && (data.revision !== frameRevision || draftRevision !== frameRevision))) return;
+    busy = true; setTool('read'); render(); status.textContent = 'Posting…'; saveDraft();
     try {
-      const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: requestId, name: name.value, body: body.value, revision: frameRevision, ...anchor, parentId }) });
+      const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: requestId, name: name.value, body: body.value, revision: frameRevision, ...anchor, markup, parentId }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not post.');
-      body.value = ''; requestId = crypto.randomUUID(); saveDraft(); status.textContent = 'Posted.';
+      body.value = ''; clearMarks(); anchor = { quote: '', selector: '' }; parentId = null; requestId = crypto.randomUUID(); saveDraft(); status.textContent = 'Posted.';
+      closeComposer(); byId('instruction').textContent = 'Comment saved.';
       await refresh();
     } catch (error) { status.textContent = 'Not sent. ' + error.message; }
-    finally { busy = false; render(); byId('post').textContent = body.value ? 'Retry' : 'Post'; }
+    finally { busy = false; setTool('read'); render(); byId('post').textContent = body.value ? 'Retry' : 'Post'; }
   });
-  // Fit the drawer above the mobile keyboard without changing the document's zoom.
+  async function viewMarkup(comment) {
+    if (loadingSnapshot || busy) return;
+    const next = safeMarkup(comment.markup); if (!next) return;
+    saveDraft(); setTool('read'); popover.hidden = true; if (!panel.hidden) closePanel(); loadingSnapshot = true;
+    try {
+      const response = await fetch('/' + slug + '/revision/' + comment.revision, { method: 'HEAD' });
+      if (!response.ok) throw new Error('Saved document unavailable. The comment and geometry remain in the feedback JSON.');
+      viewing = { ...comment, markup: next }; sizeFrame(next); byId('current').hidden = false; byId('snapshot-note').hidden = false;
+      byId('draft').hidden = true; frameRevision = ''; frame.src = '/' + slug + '/revision/' + comment.revision; render();
+    } catch (error) { byId('instruction').textContent = error.message; loadingSnapshot = false; }
+  }
+  byId('current').addEventListener('click', () => { viewing = null; loadingSnapshot = false; sizeFrame(markup); byId('current').hidden = true; byId('snapshot-note').hidden = true; frameRevision = ''; frame.src = '/' + slug + '/content'; render(); });
   function keyboardLayout() {
-    if (!visualViewport || !matchMedia('(max-width:760px)').matches) { panel.style.bottom = ''; panel.style.maxHeight = ''; return; }
+    if (!visualViewport || !matchMedia('(max-width:760px)').matches) { panel.style.bottom = ''; panel.style.maxHeight = ''; popover.style.bottom = ''; popover.style.maxHeight = ''; return; }
     panel.style.bottom = Math.max(0, innerHeight - visualViewport.height - visualViewport.offsetTop) + 'px';
     panel.style.maxHeight = Math.max(160, visualViewport.height - 56) + 'px';
+    popover.style.bottom = Math.max(0, innerHeight - visualViewport.height - visualViewport.offsetTop) + 'px';
+    popover.style.maxHeight = Math.max(160, visualViewport.height - 64) + 'px';
   }
   visualViewport?.addEventListener('resize', () => {
     keyboardLayout();
     requestAnimationFrame(() => {
       const focused = document.activeElement;
-      if (focused instanceof HTMLElement && panel.contains(focused) && (focused === name || focused === body)) focused.scrollIntoView({ block: 'center' });
+      if (focused === name || focused === body) popover.scrollTop += focused.getBoundingClientRect().top - popover.getBoundingClientRect().top - 70;
     });
   });
+  form.addEventListener('focusin', () => requestAnimationFrame(keyboardLayout));
   visualViewport?.addEventListener('scroll', keyboardLayout);
   targetLabel();
   frame.contentWindow?.postMessage({ type: 'review-ping' }, '*');
-  if (!matchMedia('(max-width:760px)').matches || body.value) openPanel();
+  if (body.value) openComposer();
   void refresh();
   setInterval(() => { if (!document.hidden) void refresh(); }, 15_000);
 })();

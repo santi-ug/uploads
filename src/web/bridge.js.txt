@@ -1,73 +1,145 @@
 (() => {
-  let enabled = false;
-  let marked = null;
-  let originalOutline = '';
-  const text = value => (value || '').replace(/\s+/g, ' ').trim().slice(0, 1000);
+  'use strict';
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none';
+  const shadow = host.attachShadow({ mode: 'closed' }), style = document.createElement('style');
+  style.textContent = ':host{color-scheme:light dark}svg{position:absolute;inset:0;width:100%;height:100%;overflow:hidden}button{position:absolute;pointer-events:auto;min-height:44px;padding:8px 14px;border:0;border-radius:8px;background:#171717;color:white;font:14px system-ui;box-shadow:0 0 0 1px #fff5,0 4px 18px #0003;cursor:pointer}button:focus-visible{outline:3px solid #85adff;outline-offset:3px}[hidden]{display:none!important}@media(prefers-color-scheme:dark){button{background:white;color:black}}';
+  const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg'); svg.setAttribute('aria-hidden', 'true');
+  const action = document.createElement('button'); action.textContent = 'Comment'; action.hidden = true;
+  shadow.append(style, svg, action); document.documentElement.append(host);
+  let tool = 'read', allowed = false, replay = false, marks = [], undo = [], redo = [], viewport = null;
+  let active = null, pending = null, quote = '', selector = '', frame = 0, timer;
+  const clean = value => (value || '').replace(/\s+/g, ' ').trim().slice(0, 1000);
+  const send = value => parent.postMessage({ ...value, revision: reviewRevision }, '*');
+  const point = event => ({ x: Math.max(0, Math.min(200000, Math.round((event.clientX + scrollX) * 10) / 10)), y: Math.max(0, Math.min(200000, Math.round((event.clientY + scrollY) * 10) / 10)) });
   function pathFor(element) {
     const parts = [];
     while (element && element !== document.body && parts.length < 12) {
-      const tag = element.localName;
-      const peers = [...element.parentElement?.children || []].filter(node => node.localName === tag);
-      parts.unshift(tag + ':nth-of-type(' + (peers.indexOf(element) + 1) + ')');
-      element = element.parentElement;
+      const tag = element.localName, peers = [...element.parentElement?.children || []].filter(node => node.localName === tag);
+      parts.unshift(tag + ':nth-of-type(' + (peers.indexOf(element) + 1) + ')'); element = element.parentElement;
     }
     return parts.join(' > ').slice(0, 500);
   }
-  function highlight(element) {
-    if (marked) marked.style.outline = originalOutline;
-    marked = element;
-    if (marked) { originalOutline = marked.style.outline; marked.style.outline = '2px solid #1b55d6'; }
+  function bounds(mark) {
+    if (mark.kind !== 'stroke') return mark;
+    const xs = mark.points.map(p => p.x), ys = mark.points.map(p => p.y);
+    return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
   }
-  function sendTarget(element, quote) {
-    if (!element || element === document.documentElement || element === document.body) return;
-    highlight(element);
-    parent.postMessage({ type: 'review-target', revision: reviewRevision, quote: text(quote), selector: pathFor(element) }, '*');
+  const rect = r => ({ kind: 'rect', x: Math.max(0, r.left + scrollX), y: Math.max(0, r.top + scrollY), width: Math.max(1, r.width), height: Math.max(1, r.height) });
+  const payload = () => marks.length ? { version: 1, viewport, marks } : null;
+  const state = () => ({ marks, viewport, quote, selector });
+  function restore(value) { ({ marks, viewport, quote, selector } = value); }
+  function remember() { undo.push(state()); if (undo.length > 64) undo.shift(); redo = []; }
+  function changed() {
+    if (!marks.length) { viewport = null; quote = ''; selector = ''; }
+    send({ type: 'review-markup', markup: payload(), quote, selector, canUndo: undo.length > 0, canRedo: redo.length > 0 }); paint();
   }
-  function ready() { parent.postMessage({ type: 'review-ready', revision: reviewRevision, title: document.title.slice(0, 200) }, '*'); }
+  function append(next) {
+    if (marks.length + next.length > 32 || [...marks, ...next].reduce((n, m) => n + (m.points?.length || 0), 0) > 2048) {
+      send({ type: 'review-notice', text: 'Annotation limit reached. Post this note before adding more marks.' }); return false;
+    }
+    remember(); viewport ||= { width: innerWidth, height: innerHeight }; marks = [...marks, ...next]; changed(); return true;
+  }
+  function paint() {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0; svg.replaceChildren();
+      for (const mark of [...marks, ...(active ? [active.mark] : [])]) {
+        let node;
+        if (mark.kind === 'stroke') {
+          node = document.createElementNS(ns, 'polyline'); node.setAttribute('points', mark.points.map(p => `${p.x - scrollX},${p.y - scrollY}`).join(' '));
+        } else {
+          node = document.createElementNS(ns, mark.kind === 'ellipse' ? 'ellipse' : 'rect');
+          const attributes = mark.kind === 'ellipse' ? { cx: mark.x - scrollX + mark.width / 2, cy: mark.y - scrollY + mark.height / 2, rx: mark.width / 2, ry: mark.height / 2 } : { x: mark.x - scrollX, y: mark.y - scrollY, width: mark.width, height: mark.height };
+          for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+        }
+        node.setAttribute('fill', 'none'); node.setAttribute('stroke', '#2563eb'); node.setAttribute('stroke-width', '3'); node.setAttribute('stroke-linecap', 'round'); node.setAttribute('stroke-linejoin', 'round'); svg.append(node);
+      }
+      action.hidden = replay || !allowed || active !== null || (!marks.length && !pending);
+      if (!action.hidden) {
+        const b = pending?.rect || bounds(marks[marks.length - 1]);
+        action.style.left = Math.max(8, Math.min(innerWidth - 105, b.x - scrollX + b.width - 90)) + 'px';
+        action.style.top = Math.max(8, Math.min(innerHeight - 52, b.y - scrollY + b.height + 8)) + 'px';
+      }
+    });
+  }
+  function setTool(next) {
+    tool = allowed && !replay && ['select', 'rect', 'ellipse', 'stroke', 'erase'].includes(next) ? next : 'read';
+    host.style.pointerEvents = tool === 'read' ? 'none' : 'auto'; host.style.touchAction = tool === 'read' ? 'auto' : 'none';
+    host.style.cursor = tool === 'read' ? '' : tool === 'erase' ? 'not-allowed' : 'crosshair'; pending = null; active = null; paint();
+  }
+  function ready() { send({ type: 'review-ready', title: document.title.slice(0, 200) }); }
   addEventListener('message', event => {
     if (event.source !== parent || !event.data || typeof event.data !== 'object') return;
-    if (event.data.type === 'review-ping') ready();
-    if (event.data.type === 'review-mode') {
-      enabled = event.data.enabled === true;
-      document.documentElement.style.cursor = enabled ? 'crosshair' : '';
-      if (!enabled) highlight(null);
+    const message = event.data;
+    if (message.type === 'review-ping') ready();
+    if (message.type === 'review-tool') { allowed = message.allowed === true; setTool(message.tool); }
+    if (message.type === 'review-history' && !replay) {
+      if (message.action === 'undo' && undo.length) { redo.push(state()); restore(undo.pop()); }
+      if (message.action === 'redo' && redo.length) { undo.push(state()); restore(redo.pop()); }
+      changed();
     }
-    if (event.data.type === 'review-reveal' && event.data.revision === reviewRevision && typeof event.data.selector === 'string') {
-      try {
-        const element = document.querySelector(event.data.selector);
-        if (element instanceof HTMLElement && text(element.textContent).includes(text(event.data.quote))) {
-          element.scrollIntoView({ block: 'center', behavior: 'instant' }); highlight(element);
-        }
-      } catch { /* Stale selectors remain visible as quotes in the trusted viewer. */ }
+    if (message.type === 'review-restore' && message.revision === reviewRevision) {
+      marks = message.markup?.marks || []; viewport = message.markup?.viewport || null; quote = clean(message.quote); selector = typeof message.selector === 'string' ? message.selector.slice(0, 500) : '';
+      undo = marks.length ? [{ marks: [], viewport: null, quote: '', selector: '' }] : []; redo = []; replay = message.replay === true; setTool('read'); paint();
+      if (replay && marks.length) { const b = bounds(marks[0]); scrollTo({ top: Math.max(0, b.y - 100), left: Math.max(0, b.x - 100), behavior: 'instant' }); }
+    }
+    if (message.type === 'review-clear') { marks = []; undo = []; redo = []; pending = null; replay = false; changed(); }
+    if (message.type === 'review-reveal' && message.revision === reviewRevision && typeof message.selector === 'string') {
+      try { const node = document.querySelector(message.selector); if (node && clean(node.textContent).includes(clean(message.quote))) { node.scrollIntoView({ block: 'center' }); marks = [rect(node.getBoundingClientRect())]; replay = true; setTool('read'); paint(); } } catch { /* Quotes remain readable when a selector no longer exists. */ }
     }
   });
-  document.addEventListener('click', event => {
-    if (!(event.target instanceof Element)) return;
-    if (!enabled) {
-      const link = event.target.closest('a[href]');
-      if (link && /^https?:\/\//i.test(link.getAttribute('href') || '')) {
-        link.setAttribute('target', '_blank'); link.setAttribute('rel', 'noopener noreferrer');
-      }
-      return;
+  const ownControl = event => {
+    if (event.composedPath().includes(action)) return true;
+    // Closed-shadow events are retargeted to the host at document capture time.
+    const r = action.getBoundingClientRect();
+    return !action.hidden && event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
+  };
+  document.addEventListener('pointerdown', event => {
+    if (tool === 'read' || !allowed || event.button !== 0 || ownControl(event)) return;
+    event.preventDefault(); event.stopImmediatePropagation(); const p = point(event);
+    if (tool === 'erase') {
+      const index = marks.findLastIndex(mark => { const b = bounds(mark); return p.x >= b.x - 8 && p.x <= b.x + b.width + 8 && p.y >= b.y - 8 && p.y <= b.y + b.height + 8; });
+      if (index >= 0) { remember(); marks = marks.filter((_, i) => i !== index); changed(); } return;
     }
-    event.preventDefault(); event.stopPropagation();
-    const selection = getSelection();
-    const element = event.target.closest('p,h1,h2,h3,h4,li,td,th,button,a,img,figure,section,div');
-    sendTarget(element, selection && !selection.isCollapsed ? selection.toString() : element?.textContent || element?.getAttribute('alt') || 'Selected element');
+    if (tool === 'select') {
+      const node = document.elementsFromPoint(event.clientX, event.clientY).find(node => node !== host && node !== document.body && node !== document.documentElement);
+      if (!node) return;
+      const target = node.closest('img,svg,canvas,video,p,h1,h2,h3,h4,li,td,th,button,a,figure') || node;
+      quote = clean(target.textContent || target.getAttribute('alt') || target.getAttribute('aria-label') || target.localName); selector = pathFor(target); append([rect(target.getBoundingClientRect())]); return;
+    }
+    active = { id: event.pointerId, start: p, mark: tool === 'stroke' ? { kind: 'stroke', points: [p] } : { kind: tool, ...p, width: 1, height: 1 } };
+    host.setPointerCapture(event.pointerId); paint();
   }, true);
-  let selectionTimer;
+  document.addEventListener('pointermove', event => {
+    if (!active || active.id !== event.pointerId) return;
+    event.preventDefault(); const p = point(event), mark = active.mark;
+    if (mark.kind === 'stroke') {
+      const previous = mark.points[mark.points.length - 1]; if (Math.hypot(p.x - previous.x, p.y - previous.y) >= 2 && mark.points.length < 512) mark.points.push(p);
+    } else { mark.x = Math.min(active.start.x, p.x); mark.y = Math.min(active.start.y, p.y); mark.width = Math.max(1, Math.abs(p.x - active.start.x)); mark.height = Math.max(1, Math.abs(p.y - active.start.y)); }
+    paint();
+  }, { capture: true, passive: false });
+  function finish(event) {
+    if (!active || active.id !== event.pointerId) return;
+    const mark = active.mark; active = null;
+    if (event.type !== 'pointercancel' && (mark.kind === 'stroke' ? mark.points.length > 1 : mark.width > 2 && mark.height > 2)) append([mark]);
+    if (host.hasPointerCapture(event.pointerId)) host.releasePointerCapture(event.pointerId); paint();
+  }
+  document.addEventListener('pointerup', finish, true); document.addEventListener('pointercancel', finish, true);
+  document.addEventListener('click', event => { if (tool !== 'read' && !ownControl(event)) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
   document.addEventListener('selectionchange', () => {
-    clearTimeout(selectionTimer);
-    selectionTimer = setTimeout(() => {
-      if (!enabled) return;
-      const selection = getSelection();
-      if (!selection || selection.isCollapsed || !text(selection.toString())) return;
-      const node = selection.anchorNode;
-      sendTarget(node instanceof Element ? node : node?.parentElement, selection.toString());
-    }, 300);
+    clearTimeout(timer); timer = setTimeout(() => {
+      if (tool !== 'read' || !allowed || replay) return;
+      const selection = getSelection(); if (!selection || selection.isCollapsed || !clean(selection.toString())) { pending = null; paint(); return; }
+      const range = selection.getRangeAt(0), node = selection.anchorNode?.parentElement; if (!node || node === host) return;
+      pending = { quote: clean(selection.toString()), selector: pathFor(node), rect: rect(range.getBoundingClientRect()), marks: [...range.getClientRects()].filter(r => r.width > 0 && r.height > 0).slice(0, 32).map(rect) }; paint();
+    }, 200);
   });
-  document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') parent.postMessage({ type: 'review-escape' }, '*');
+  action.addEventListener('pointerdown', event => event.preventDefault());
+  action.addEventListener('click', () => {
+    if (pending) { quote = pending.quote; selector = pending.selector; if (!append(pending.marks)) return; pending = null; }
+    const b = action.getBoundingClientRect(); send({ type: 'review-target', quote: quote || `${marks.length} visual mark${marks.length === 1 ? '' : 's'}`, selector, markup: payload(), position: { x: b.left, y: b.bottom } });
   });
-  ready();
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') send({ type: 'review-escape' }); });
+  addEventListener('scroll', paint, { passive: true }); addEventListener('resize', paint); ready();
 })();

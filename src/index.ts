@@ -34,6 +34,12 @@ async function route(request: Request, env: Env): Promise<Response> {
     const html = await readText(request, 5_000_000)
     const title = (request.headers.get('x-doc-title') ?? slug).slice(0, 200)
     const publishedAt = new Date().toISOString()
+    // Owner-only snapshots keep annotation geometry tied to the HTML it described.
+    if (tombstone) {
+      const previous = await env.DOCS.get(slug, 'text')
+      if (previous !== null && previous !== html) await saveRevision(env.DOCS, slug, previous)
+      await saveRevision(env.DOCS, slug, html)
+    }
     await env.DOCS.put(slug, html, { metadata: { title, publishedAt } })
     return Response.json({ slug, title, publishedAt })
   }
@@ -49,7 +55,17 @@ async function route(request: Request, env: Env): Promise<Response> {
   const html = await env.DOCS.get(slug, 'text')
   if (html === null) throw new HttpError(404, 'Not found.')
   const revision = await digest(html)
-  if (action === 'review' && !id && request.method === 'POST') return manageReview(request, env.REVIEWS, slug, env.UPLOAD_TOKEN)
+  if (action === 'review' && !id && request.method === 'POST') {
+    authorize(request, env.UPLOAD_TOKEN)
+    await saveRevision(env.DOCS, slug, html)
+    return manageReview(request, env.REVIEWS, slug, env.UPLOAD_TOKEN)
+  }
+  if (action === 'revision' && review && /^[a-f0-9]{64}$/.test(id) && (request.method === 'GET' || request.method === 'HEAD')) {
+    const saved = id === revision ? html : await env.DOCS.get(`${slug}:revision:${id}`, 'text')
+    if (saved === null) throw new HttpError(404, 'Document snapshot expired or unavailable. The comment and marks are still saved.')
+    const response = contentResponse(saved, true, id)
+    return request.method === 'HEAD' ? new Response(null, { headers: response.headers }) : response
+  }
   if (action === 'comments' && review) {
     if (!id && request.method === 'GET') return listComments(env.REVIEWS, slug, review, revision)
     if (!id && request.method === 'POST') return addComment(request, env.REVIEWS, slug, revision, env.UPLOAD_TOKEN)
@@ -60,4 +76,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     return request.method === 'HEAD' ? new Response(null, { headers: response.headers }) : response
   }
   throw new HttpError(405, 'Method or route not supported.')
+}
+
+async function saveRevision(docs: KVNamespace, slug: string, html: string) {
+  const key = `${slug}:revision:${await digest(html)}`
+  if (await docs.get(key, 'text') === null) await docs.put(key, html, { expirationTtl: 90 * 24 * 60 * 60 })
 }

@@ -55,10 +55,46 @@ test('origin, validation, revision, and atomic rate limits reject invalid writes
   assert.equal((await call('/' + slug + '/comments', 'POST', comment(revision), { origin: 'https://attacker.invalid' })).status, 403);
   assert.equal((await call('/' + slug + '/comments', 'POST', comment(revision, { body: 'x'.repeat(2001) }), guest)).status, 400);
   assert.equal((await call('/' + slug + '/comments', 'POST', comment('old'), guest)).status, 409);
-  assert.equal((await call('/' + slug + '/comments', 'POST', comment(revision, { body: 'x'.repeat(13000) }), guest)).status, 413);
+  assert.equal((await call('/' + slug + '/comments', 'POST', comment(revision, { body: 'x'.repeat(97000) }), guest)).status, 413);
   const responses = await Promise.all(Array.from({ length: 12 }, () => call('/' + slug + '/comments', 'POST', comment(revision), guest)));
   assert.equal(responses.filter(response => response.status === 201).length, 10);
   assert.equal(responses.filter(response => response.status === 429).length, 2);
+});
+
+const markup = { version: 1, viewport: { width: 390, height: 650 }, marks: [
+  { kind: 'ellipse', x: 20, y: 130, width: 220, height: 110 },
+  { kind: 'stroke', points: [{ x: 20, y: 100 }, { x: 40, y: 110 }, { x: 60, y: 100 }] },
+  { kind: 'rect', x: 30, y: 800, width: 200, height: 80 },
+] };
+test('markup geometry persists, deduplicates, and replays an owner-authored older revision', async () => {
+  const { slug, revision } = await document();
+  const payload = comment(revision, { markup });
+  assert.equal((await call('/' + slug + '/comments', 'POST', payload, guest)).status, 201);
+  assert.equal((await call('/' + slug + '/comments', 'POST', payload, guest)).status, 200);
+  const state = await (await call('/' + slug + '/comments')).json();
+  assert.deepEqual(state.comments[0].markup, markup);
+  await fetch(base + '/' + slug, { method: 'PUT', headers: owner, body: fixture.replace('20 customers', '5 customers') });
+  const saved = await call('/' + slug + '/revision/' + revision);
+  assert.equal(saved.status, 200); assert.match(await saved.text(), /20 customers/);
+  assert.match(saved.headers.get('content-security-policy'), /sandbox/);
+  const other = await document();
+  assert.equal((await call('/' + other.slug + '/revision/' + '0'.repeat(64))).status, 404);
+  await call('/' + slug, 'DELETE', undefined, owner);
+  assert.equal((await call('/' + slug + '/revision/' + revision)).status, 404);
+});
+test('markup boundary rejects executable shapes, invalid dimensions, point floods, and oversized requests', async () => {
+  const { slug, revision } = await document();
+  const invalid = [
+    { ...markup, version: 2 },
+    { ...markup, viewport: { width: -1, height: 650 } },
+    { ...markup, marks: [{ kind: 'svg', html: '<script>alert(1)</script>' }] },
+    { ...markup, marks: [{ kind: 'ellipse', x: null, y: 0, width: 2, height: 2 }] },
+    { ...markup, marks: Array(33).fill(markup.marks[0]) },
+    { ...markup, marks: [{ kind: 'stroke', points: Array(513).fill({ x: 1, y: 1 }) }] },
+    { ...markup, marks: Array(5).fill({ kind: 'stroke', points: Array(500).fill({ x: 1, y: 1 }) }) },
+  ];
+  for (const value of invalid) assert.equal((await call('/' + slug + '/comments', 'POST', comment(revision, { markup: value }), guest)).status, 400);
+  const state = await (await call('/' + slug + '/comments')).json(); assert.equal(state.comments.length, 0);
 });
 test('republish keeps earlier threads and revoked links cannot be read or resurrected', async () => {
   const { slug, revision } = await document();

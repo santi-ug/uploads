@@ -6,10 +6,12 @@ Keep published HTML in the existing KV namespace and store reviews in D1. Serve 
 trusted review viewer around an opaque-origin sandboxed document. This allows
 phone and guest review without exposing a Mac or the Lavish control server.
 
-Design A was approved: a bottom drawer below 761 CSS pixels, a side panel above it.
-The viewer uses the system font, light/dark themes, 44px buttons, and a keyboard-aware
-mobile drawer. Read mode preserves document controls. Comment mode captures a tapped
-element or selected text. The drawer closes without discarding its draft.
+The bottom home bar has 44px, labelled icon buttons for Read, Select, Region, Circle,
+Draw, Erase, Undo, and Redo. Read preserves scrolling, text selection, and document
+controls. Mark anything, including part of an image, then tap Comment beside it.
+The editor opens near the target on desktop and as a keyboard-aware sheet on mobile.
+Closing preserves the draft. Comments remain in a separate drawer or desktop panel.
+The system font and light/dark themes are unchanged.
 
 ## Workflow
 
@@ -38,14 +40,24 @@ defines when to retrieve it and when to wait for further feedback.
 ## Data and trust boundaries
 
 - Each comment stores its document slug, HTML SHA-256 revision, quote, CSS locator,
-  display name, text, timestamp, and optional root thread ID.
+  display name, text, timestamp, optional root thread ID, and optional markup geometry.
 - A new thread requires the current revision. Replies inherit the root's anchor.
-  Earlier revisions retain their quote and an Earlier version label; the viewer
-  does not claim an old selector points to the new content.
+  Earlier revisions retain their quote and an Earlier version label. View markup
+  opens the saved HTML at the original viewport, with a Back to current control.
+  Owner publications archive reviewed HTML for 90 days from first capture. Revoking
+  the link blocks snapshots too. Expired snapshots leave the comment and geometry
+  readable, with an explicit unavailable message.
+- Markup is bounded JSON geometry, never guest HTML or SVG: rectangles, ellipses,
+  and strokes with page coordinates and the original viewport. Limits are 32 marks,
+  512 points per stroke, and 2,048 points total. The server constructs allowed fields.
+  Drawings lock the document viewport so comments do not silently move on reflow.
+- Replay saves HTML, not pixels or live interaction state. Canvas state, open menus,
+  scripts with changing output, and externally changed images are not frozen. Prefer
+  self-contained static artifacts. See [visual annotation decision](visual-annotation-design.md).
 - UUID request IDs deduplicate network retries. One SQL statement checks review
   state and rate limits atomically before inserting.
 - Limits: 2,000 comment characters, 60 name characters, 1,000 quote characters,
-  12 KB request body, 10 comments per IP/document/minute, 30 per document/minute,
+  96 KB comment request body, 10 comments per IP/document/minute, 30 per document/minute,
   500 total per document. The total cap includes replies and resolved comments.
 - Only a hash derived from IP, document, and owner secret is stored for rate limits;
   it is not returned to readers. Rotation of the upload secret resets this rate key.

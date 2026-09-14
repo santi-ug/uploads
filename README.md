@@ -2,7 +2,8 @@
 
 ## docs Worker
 
-Hosted review adds a mobile comment drawer and desktop side panel to the same link:
+Hosted review adds text selection, image circles, freehand markup, and a mobile icon
+toolbar to the same link. Saved marks replay at their original document viewport:
 
 ```sh
 publish-doc --review ~/writeups/plan.html

@@ -5,12 +5,34 @@ upload token. No production Worker, database, or publisher symlink was changed.
 
 ## Automated checks
 
-- `REVIEW_TEST_URL=http://127.0.0.1:8891 pnpm test`: 5 passed, 0 failed.
+- `REVIEW_TEST_URL=http://127.0.0.1:8891 pnpm test`: 9 passed, 0 failed.
 - `pnpm typecheck`: exit 0.
 - `bash -n scripts/publish-doc`: exit 0.
 - `node --check` for both browser scripts: exit 0.
 - `wrangler d1 migrations apply REVIEWS --local`: migration applied successfully.
-- `wrangler deploy --dry-run`: successful bundle, 31.57 KiB before compression.
+- `wrangler deploy --dry-run`: successful bundle, 52.41 KiB before compression.
+
+## Visual markup checks, September 14
+
+- iPhone 17 Pro, Safari/iOS 26.5: circled the middle step of an actual image,
+  undid/redid the circle, reloaded, opened the nearby editor, and posted the note.
+  Feedback JSON returned the exact ellipse, original 402×566 viewport, and body.
+- Drew a stroke over the image, erased it, restored it with Undo, reloaded the
+  draft, and posted. Feedback JSON returned all ten sampled points and exact text.
+- Chromium: View markup replayed the phone circle against the saved HTML at
+  402×566. Back to current restored the responsive frame and enabled tools.
+- Chromium: measured all eight toolbar hit areas at 44×44px, without page overflow.
+- iPad mini Safari: inspected the current document and complete toolbar in portrait.
+- iPhone dark appearance: inspected the black viewer, legible icons, and comment count.
+- Fixed a WebKit closed-shadow event-retargeting bug found during the nearby Comment
+  test. Draft history and cancelled gestures have focused bridge protocol tests.
+- Added sticky editor heading/Post controls after keyboard testing exposed hidden
+  controls. The editor remained usable, but full software-keyboard coverage is pending.
+
+The checks above used `test/markup-demo.html`. Snapshot replay does not claim to freeze
+live canvas state or changing external assets. Native text-selection handles, every
+tool at every scroll position, landscape rotation, and assistive technology remain
+outside the completed manual pass.
 
 ## Observed UI and CLI behavior
 
@@ -42,6 +64,15 @@ D1 after accidental input. Comment body and anchor evidence were preserved.
   or network requests outside Fleet's existing artifact rules.
 
 ## Images
+
+| Previous review UI | Phone annotation replayed on desktop |
+| --- | --- |
+| ![Before markup tools](https://github.com/santi-ug/uploads/releases/download/assets/1789422790-markup-before.png) | ![Saved phone circle](https://github.com/santi-ug/uploads/releases/download/assets/1789422790-markup-desktop-replay.png) |
+
+![Circle during iPhone testing](https://github.com/santi-ug/uploads/releases/download/assets/1789422790-markup-phone-circle.png)
+![Current dark mobile toolbar](https://github.com/santi-ug/uploads/releases/download/assets/1789422790-markup-phone-dark.png)
+
+## Earlier baseline checks
 
 | Before | Desktop review |
 | --- | --- |

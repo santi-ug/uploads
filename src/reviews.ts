@@ -1,10 +1,11 @@
 import { authorize, digest, field, HttpError, readJson, record, sameOrigin } from './http'
+import { parseMarkup } from './markup'
 export type Review = { status: 'open' | 'closed' | 'revoked'; expires_at: number }
 export type Comment = {
   id: string; parent_id: string | null; revision: string; quote: string; selector: string;
-  name: string; body: string; status: 'open' | 'resolved'; created_at: number
+  name: string; body: string; status: 'open' | 'resolved'; created_at: number; markup: string | null
 }
-const columns = 'id, parent_id, revision, quote, selector, name, body, status, created_at'
+const columns = 'id, parent_id, revision, quote, selector, name, body, status, created_at, markup'
 export const findReview = (db: D1Database, slug: string) => db.prepare('SELECT status, expires_at FROM reviews WHERE slug = ?').bind(slug).first<Review>()
 /** Owner operations never share the upload credential with the review browser. */
 export async function manageReview(request: Request, db: D1Database, slug: string, token: string) {
@@ -21,17 +22,18 @@ export async function manageReview(request: Request, db: D1Database, slug: strin
 }
 export async function listComments(db: D1Database, slug: string, review: Review, revision: string) {
   const { results } = await db.prepare(`SELECT ${columns} FROM comments WHERE slug=? ORDER BY created_at, id LIMIT 500`).bind(slug).all<Comment>()
-  return Response.json({ revision, open: review.status === 'open' && review.expires_at > Date.now(), expiresAt: review.expires_at, comments: results })
+  return Response.json({ revision, open: review.status === 'open' && review.expires_at > Date.now(), expiresAt: review.expires_at, comments: results.map(comment => ({ ...comment, markup: comment.markup ? parseMarkup(JSON.parse(comment.markup)) : null })) })
 }
 export async function addComment(request: Request, db: D1Database, slug: string, revision: string, token: string) {
   sameOrigin(request)
-  const input = record(await readJson(request))
+  const input = record(await readJson(request, 96_000))
   const id = field(input.id, 36)
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) throw new HttpError(400, 'Invalid comment ID.')
   const name = field(input.name, 60), body = field(input.body, 2000)
   let quote = field(input.quote, 1000, true), selector = field(input.selector, 500, true)
   let commentRevision = field(input.revision, 64)
   const parentId = input.parentId === null ? null : field(input.parentId, 36)
+  const markup = parentId ? null : parseMarkup(input.markup)
   if (parentId) {
     const parent = await db.prepare('SELECT revision, quote, selector FROM comments WHERE slug=? AND id=? AND parent_id IS NULL').bind(slug, parentId).first<Pick<Comment, 'revision' | 'quote' | 'selector'>>()
     if (!parent) throw new HttpError(400, 'Thread not found.')
@@ -42,12 +44,12 @@ export async function addComment(request: Request, db: D1Database, slug: string,
   const previous = await db.prepare('SELECT id FROM comments WHERE id=? AND slug=? AND actor_hash=?').bind(id, slug, actor).first()
   if (previous) return Response.json({ id }, { status: 200 })
   const now = Date.now()
-  const result = await db.prepare(`INSERT INTO comments (id,slug,parent_id,revision,quote,selector,name,body,created_at,actor_hash)
-    SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM reviews WHERE slug=? AND status='open' AND expires_at>?)
+  const result = await db.prepare(`INSERT INTO comments (id,slug,parent_id,revision,quote,selector,name,body,created_at,actor_hash,markup)
+    SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM reviews WHERE slug=? AND status='open' AND expires_at>?)
     AND (SELECT COUNT(*) FROM comments WHERE slug=?) < 500
     AND (SELECT COUNT(*) FROM comments WHERE slug=? AND created_at>?) < 30
     AND (SELECT COUNT(*) FROM comments WHERE slug=? AND actor_hash=? AND created_at>?) < 10
-    ON CONFLICT(id) DO NOTHING`).bind(id, slug, parentId, commentRevision, quote, selector, name, body, now, actor, slug, now, slug, slug, now - 60_000, slug, actor, now - 60_000).run()
+    ON CONFLICT(id) DO NOTHING`).bind(id, slug, parentId, commentRevision, quote, selector, name, body, now, actor, markup ? JSON.stringify(markup) : null, slug, now, slug, slug, now - 60_000, slug, actor, now - 60_000).run()
   if (!result.meta.changes) {
     const review = await findReview(db, slug)
     if (!review || review.status !== 'open' || review.expires_at <= now) throw new HttpError(403, 'Review is closed.')
