@@ -4,6 +4,11 @@
 #   publish-doc ~/writeups/pricing.html      publish or update, prints the URL
 #   publish-doc --unpublish ~/writeups/x.html  revoke the link
 #   publish-doc --list                       show every published doc
+#   publish-doc --review <file.html>         publish with hosted comments
+#   publish-doc --comments <file.html>       retrieve feedback as JSON
+#   publish-doc --close-review <file.html>   disable new comments
+#   publish-doc --open-review <file.html>    reopen for 30 days
+#   publish-doc --resolve <file.html> <id>   resolve a thread
 #
 # A doc keeps its slug across re-publishes, so a link already sent to a client
 # keeps working and shows the latest version.
@@ -16,6 +21,10 @@ KEYCHAIN_SERVICE="docs-upload-token"
 die() { echo "publish-doc: $*" >&2; exit 1; }
 
 token() {
+	if [ -n "${DOCS_UPLOAD_TOKEN:-}" ]; then
+		printf '%s' "$DOCS_UPLOAD_TOKEN"
+		return
+	fi
 	security find-generic-password -s "$KEYCHAIN_SERVICE" -w 2>/dev/null ||
 		die "no upload token in the keychain. Add it with:
   security add-generic-password -s $KEYCHAIN_SERVICE -a \"\$USER\" -w '<token>'"
@@ -37,7 +46,45 @@ slug_for() {
 	echo "$fresh"
 }
 
+existing_slug() {
+	local file="$1" path
+	path="$(cd "$(dirname "$file")" && pwd)/$(basename "$file")"
+	[ -s "$MANIFEST" ] || die "nothing published yet"
+	awk -F'\t' -v p="$path" '$1 == p { print $2; exit }' "$MANIFEST"
+}
+
+review=false
+if [ "${1:-}" = '--review' ]; then review=true; shift; fi
+
 case "${1:---help}" in
+--comments | --close-review | --open-review | --resolve | --reopen-thread)
+	command="$1"
+	file="${2:?usage: publish-doc <operation> <file.html>}"
+	slug="$(existing_slug "$file")"
+	[ -n "$slug" ] || die "$file was never published"
+	case "$command" in
+	--comments)
+		curl -fsS -H "authorization: Bearer $(token)" "$BASE_URL/$slug/comments"
+		printf '\n'
+		;;
+	--close-review | --open-review)
+		action=close
+		[ "$command" != '--open-review' ] || action=open
+		curl -fsS -X POST -H "authorization: Bearer $(token)" -H 'content-type: application/json' \
+			--data "{\"action\":\"$action\"}" "$BASE_URL/$slug/review"
+		printf '\n'
+		;;
+	*)
+		id="${3:?a thread ID is required}"
+		[[ "$id" =~ ^[0-9a-fA-F-]{36}$ ]] || die "invalid thread ID"
+		status=resolved
+		[ "$command" != '--reopen-thread' ] || status=open
+		curl -fsS -X PATCH -H "authorization: Bearer $(token)" -H 'content-type: application/json' \
+			--data "{\"status\":\"$status\"}" "$BASE_URL/$slug/comments/$id"
+		printf '\n'
+		;;
+	esac
+	;;
 --list)
 	[ -s "$MANIFEST" ] || die "nothing published yet"
 	awk -F'\t' -v base="$BASE_URL" '{ printf "%s/%s  %s\n", base, $2, $1 }' "$MANIFEST"
@@ -55,7 +102,7 @@ case "${1:---help}" in
 	echo "revoked $BASE_URL/$slug"
 	;;
 --help | -h)
-	sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
 	;;
 *)
 	file="$1"
@@ -69,6 +116,11 @@ case "${1:---help}" in
 		-H "x-doc-title: $title" \
 		--data-binary "@$path" \
 		"$BASE_URL/$slug" >/dev/null
+	if [ "$review" = true ]; then
+		curl -fsS -X POST -H "authorization: Bearer $(token)" -H 'content-type: application/json' \
+			--data '{"action":"open"}' "$BASE_URL/$slug/review" >/dev/null ||
+			die "document published at $BASE_URL/$slug, but review could not be enabled; retry --review"
+	fi
 	echo "$BASE_URL/$slug"
 	;;
 esac

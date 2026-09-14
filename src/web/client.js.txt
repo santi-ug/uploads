@@ -1,0 +1,169 @@
+(() => {
+  'use strict';
+  const byId = id => document.getElementById(id);
+  const frame = byId('document'), panel = byId('panel'), form = byId('composer');
+  const name = byId('name'), body = byId('body'), status = byId('status');
+  const slug = document.body.dataset.slug;
+  const endpoint = '/' + slug + '/comments';
+  const draftKey = 'review-draft:' + slug;
+  let data = { revision: '', open: false, comments: [] };
+  let frameRevision = '', commenting = false, busy = false, loading = false;
+  let anchor = { quote: '', selector: '' }, parentId = null, requestId = crypto.randomUUID();
+  let returnFocus = byId('show');
+  function saveDraft() {
+    try { localStorage.setItem(draftKey, JSON.stringify({ name: name.value, body: body.value, anchor, parentId, requestId, revision: frameRevision })); } catch { /* Posting works without browser storage. */ }
+  }
+  let draftRevision = '';
+  try {
+    const draft = JSON.parse(localStorage.getItem(draftKey) || 'null');
+    if (draft && typeof draft.name === 'string' && typeof draft.body === 'string') {
+      name.value = draft.name.slice(0, 60); body.value = draft.body.slice(0, 2000);
+      if (draft.anchor && typeof draft.anchor.quote === 'string' && typeof draft.anchor.selector === 'string') anchor = { quote: draft.anchor.quote.slice(0, 1000), selector: draft.anchor.selector.slice(0, 500) };
+      if (typeof draft.parentId === 'string') parentId = draft.parentId;
+      if (typeof draft.requestId === 'string') requestId = draft.requestId;
+      if (typeof draft.revision === 'string') draftRevision = draft.revision;
+    }
+  } catch { /* A missing or invalid draft never prevents reading. */ }
+  function openPanel(focus = false) {
+    if (panel.hidden) {
+      const active = document.activeElement;
+      returnFocus = active instanceof HTMLElement && active !== document.body && !panel.contains(active) ? active : byId('show');
+    }
+    panel.hidden = false; document.body.classList.add('panel-open'); byId('show').setAttribute('aria-expanded', 'true');
+    if (focus) byId('close').focus();
+  }
+  function closePanel() {
+    panel.hidden = true; document.body.classList.remove('panel-open'); byId('show').setAttribute('aria-expanded', 'false');
+    returnFocus.focus();
+  }
+  function setMode(enabled) {
+    commenting = enabled && data.open;
+    byId('mode').setAttribute('aria-pressed', String(commenting));
+    byId('instruction').hidden = !commenting;
+    frame.contentWindow?.postMessage({ type: 'review-mode', enabled: commenting }, '*');
+  }
+  function targetLabel() {
+    byId('composer-title').textContent = parentId ? 'Reply' : 'New comment';
+    byId('target').textContent = anchor.quote;
+    byId('target').hidden = !anchor.quote;
+    byId('clear-target').hidden = !anchor.quote && !parentId;
+  }
+  function selectTarget(next, thread = null) {
+    if (busy) return;
+    if (body.value.trim() && (thread !== parentId || anchor.selector !== next.selector) && !confirm('Move your current draft to this comment target?')) return;
+    anchor = next; parentId = thread; requestId = crypto.randomUUID(); draftRevision = frameRevision;
+    targetLabel(); saveDraft(); openPanel(); form.scrollIntoView({ block: 'nearest' });
+    // Keep the phone keyboard closed until the reviewer taps the comment field.
+    setMode(false);
+  }
+  const element = (tag, text, className) => {
+    const node = document.createElement(tag); node.textContent = text;
+    if (className) node.className = className; return node;
+  };
+  const button = (label, action) => {
+    const node = element('button', label); node.type = 'button'; node.addEventListener('click', action); return node;
+  };
+  function render() {
+    name.disabled = busy; body.disabled = busy;
+    byId('review-state').textContent = data.open ? 'Review open · comments are saved online.' : 'Review closed · the document and comments remain readable.';
+    byId('post').disabled = busy || !data.open || !frameRevision;
+    byId('mode').disabled = !data.open;
+    byId('new').disabled = !data.open;
+    if (!data.open) setMode(false);
+    const roots = data.comments.filter(comment => comment.parent_id === null);
+    byId('count').textContent = roots.filter(comment => comment.status === 'open').length;
+    const list = byId('threads'); list.replaceChildren();
+    for (const comment of roots.filter(comment => byId('resolved').checked || comment.status === 'open')) {
+      const article = document.createElement('article');
+      article.append(element('div', comment.name + ' · ' + new Date(comment.created_at).toLocaleString() + (comment.status === 'resolved' ? ' · Resolved' : ''), 'meta'));
+      if (comment.quote) article.append(element('blockquote', comment.quote));
+      if (comment.revision !== frameRevision) article.append(element('p', 'Earlier version', 'hint'));
+      article.append(element('p', comment.body, 'comment-body'));
+      for (const reply of data.comments.filter(item => item.parent_id === comment.id)) {
+        const row = element('div', '', 'reply');
+        row.append(element('div', reply.name + ' · ' + new Date(reply.created_at).toLocaleString(), 'meta'), element('p', reply.body, 'comment-body')); article.append(row);
+      }
+      const actions = element('div', '', 'thread-actions');
+      if (data.open) actions.append(button('Reply', () => selectTarget({ quote: comment.quote, selector: comment.selector }, comment.id)));
+      if (comment.selector && comment.revision === frameRevision) actions.append(button('Show in document', () => {
+        frame.contentWindow?.postMessage({ type: 'review-reveal', ...comment }, '*');
+        if (matchMedia('(max-width:760px)').matches) closePanel();
+      }));
+      article.append(actions); list.append(article);
+    }
+    if (!list.childElementCount) list.append(element('p', 'No open comments. Start a thread or select something in the document.', 'hint'));
+    if (data.revision && frameRevision && data.revision !== frameRevision) {
+      byId('review-state').textContent = 'A newer document version is available. Your draft is kept.';
+      if (!byId('reload')) {
+        const reload = button('Load latest version', () => { saveDraft(); location.reload(); }); reload.id = 'reload'; byId('review-state').after(reload);
+      }
+      byId('post').disabled = true;
+    }
+  }
+  async function refresh() {
+    if (loading) return; loading = true;
+    try {
+      const response = await fetch(endpoint, { cache: 'no-store' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not load comments.');
+      data = result; render();
+    } catch (error) { byId('review-state').textContent = error.message + ' Use Refresh to retry.'; }
+    finally { loading = false; }
+  }
+  byId('show').addEventListener('click', () => panel.hidden ? openPanel(true) : closePanel());
+  byId('close').addEventListener('click', closePanel);
+  byId('mode').addEventListener('click', () => { setMode(!commenting); if (commenting && matchMedia('(max-width:760px)').matches) closePanel(); });
+  byId('new').addEventListener('click', () => selectTarget({ quote: '', selector: '' }));
+  byId('clear-target').addEventListener('click', () => selectTarget({ quote: '', selector: '' }));
+  byId('refresh').addEventListener('click', refresh);
+  byId('resolved').addEventListener('change', render);
+  form.addEventListener('input', () => { requestId = crypto.randomUUID(); saveDraft(); });
+  addEventListener('keydown', event => { if (event.key === 'Escape') { setMode(false); if (!panel.hidden) closePanel(); } });
+  frame.addEventListener('load', () => frame.contentWindow?.postMessage({ type: 'review-ping' }, '*'));
+  addEventListener('message', event => {
+    if (event.source !== frame.contentWindow || !event.data || typeof event.data !== 'object') return;
+    const message = event.data;
+    if (message.type === 'review-ready' && typeof message.revision === 'string' && /^[a-f0-9]{64}$/.test(message.revision)) {
+      frameRevision = message.revision;
+      if (typeof message.title === 'string' && message.title.trim()) { byId('title').textContent = message.title.slice(0, 200); document.title = message.title.slice(0, 200) + ' · Review'; }
+      if (draftRevision && draftRevision !== frameRevision && body.value.trim()) {
+        anchor = { quote: '', selector: '' }; parentId = null;
+        status.textContent = 'Draft restored from an earlier version. Select its target again.'; targetLabel();
+      }
+      draftRevision = frameRevision; render();
+    }
+    if (message.type === 'review-target' && commenting && message.revision === frameRevision && typeof message.quote === 'string' && typeof message.selector === 'string') selectTarget({ quote: message.quote.slice(0, 1000), selector: message.selector.slice(0, 500) });
+    if (message.type === 'review-escape') { setMode(false); if (!panel.hidden) closePanel(); }
+  });
+  form.addEventListener('submit', async event => {
+    event.preventDefault(); if (busy || !data.open) return;
+    busy = true; render(); status.textContent = 'Posting…'; saveDraft();
+    try {
+      const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: requestId, name: name.value, body: body.value, revision: frameRevision, ...anchor, parentId }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not post.');
+      body.value = ''; requestId = crypto.randomUUID(); saveDraft(); status.textContent = 'Posted.';
+      await refresh();
+    } catch (error) { status.textContent = 'Not sent. ' + error.message; }
+    finally { busy = false; render(); byId('post').textContent = body.value ? 'Retry' : 'Post'; }
+  });
+  // Fit the drawer above the mobile keyboard without changing the document's zoom.
+  function keyboardLayout() {
+    if (!visualViewport || !matchMedia('(max-width:760px)').matches) { panel.style.bottom = ''; panel.style.maxHeight = ''; return; }
+    panel.style.bottom = Math.max(0, innerHeight - visualViewport.height - visualViewport.offsetTop) + 'px';
+    panel.style.maxHeight = Math.max(160, visualViewport.height - 56) + 'px';
+  }
+  visualViewport?.addEventListener('resize', () => {
+    keyboardLayout();
+    requestAnimationFrame(() => {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && panel.contains(focused) && (focused === name || focused === body)) focused.scrollIntoView({ block: 'center' });
+    });
+  });
+  visualViewport?.addEventListener('scroll', keyboardLayout);
+  targetLabel();
+  frame.contentWindow?.postMessage({ type: 'review-ping' }, '*');
+  if (!matchMedia('(max-width:760px)').matches || body.value) openPanel();
+  void refresh();
+  setInterval(() => { if (!document.hidden) void refresh(); }, 15_000);
+})();

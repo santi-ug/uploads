@@ -1,0 +1,39 @@
+name: Review checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm exec wrangler deploy --dry-run
+      - name: Integration tests against local Cloudflare storage
+        shell: bash
+        run: |
+          pnpm exec wrangler d1 migrations apply REVIEWS --local
+          pnpm exec wrangler dev --local --port 8891 --ip 127.0.0.1 --var UPLOAD_TOKEN:local-review-test-only > /tmp/review-worker.log 2>&1 &
+          review_pid=$!
+          printf '%s\n' "$review_pid" > .dev-server.pid
+          trap 'kill "$review_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl -s http://127.0.0.1:8891/ >/dev/null; then break; fi
+            sleep 1
+          done
+          REVIEW_TEST_URL=http://127.0.0.1:8891 pnpm test
+      - name: Syntax checks
+        run: |
+          bash -n scripts/publish-doc
+          node --check < src/web/client.js.txt
+          node --check < src/web/bridge.js.txt

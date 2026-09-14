@@ -2,6 +2,17 @@
 
 ## docs Worker
 
+Hosted review adds a mobile comment drawer and desktop side panel to the same link:
+
+```sh
+publish-doc --review ~/writeups/plan.html
+publish-doc --comments ~/writeups/plan.html
+```
+
+Guest comments are stored in Cloudflare D1. The Mac can be offline. See
+[hosted review](docs/hosted-review.md) for owner controls, trust boundaries, local
+tests, and the approval-gated release sequence.
+
 Link-only HTML host for writeups, mocks, and client-facing documents.
 
 - `src/index.ts` serves `GET /<slug>` publicly and gates `PUT`/`DELETE` behind a bearer token.

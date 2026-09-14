@@ -1,0 +1,73 @@
+(() => {
+  let enabled = false;
+  let marked = null;
+  let originalOutline = '';
+  const text = value => (value || '').replace(/\s+/g, ' ').trim().slice(0, 1000);
+  function pathFor(element) {
+    const parts = [];
+    while (element && element !== document.body && parts.length < 12) {
+      const tag = element.localName;
+      const peers = [...element.parentElement?.children || []].filter(node => node.localName === tag);
+      parts.unshift(tag + ':nth-of-type(' + (peers.indexOf(element) + 1) + ')');
+      element = element.parentElement;
+    }
+    return parts.join(' > ').slice(0, 500);
+  }
+  function highlight(element) {
+    if (marked) marked.style.outline = originalOutline;
+    marked = element;
+    if (marked) { originalOutline = marked.style.outline; marked.style.outline = '2px solid #1b55d6'; }
+  }
+  function sendTarget(element, quote) {
+    if (!element || element === document.documentElement || element === document.body) return;
+    highlight(element);
+    parent.postMessage({ type: 'review-target', revision: reviewRevision, quote: text(quote), selector: pathFor(element) }, '*');
+  }
+  function ready() { parent.postMessage({ type: 'review-ready', revision: reviewRevision, title: document.title.slice(0, 200) }, '*'); }
+  addEventListener('message', event => {
+    if (event.source !== parent || !event.data || typeof event.data !== 'object') return;
+    if (event.data.type === 'review-ping') ready();
+    if (event.data.type === 'review-mode') {
+      enabled = event.data.enabled === true;
+      document.documentElement.style.cursor = enabled ? 'crosshair' : '';
+      if (!enabled) highlight(null);
+    }
+    if (event.data.type === 'review-reveal' && event.data.revision === reviewRevision && typeof event.data.selector === 'string') {
+      try {
+        const element = document.querySelector(event.data.selector);
+        if (element instanceof HTMLElement && text(element.textContent).includes(text(event.data.quote))) {
+          element.scrollIntoView({ block: 'center', behavior: 'instant' }); highlight(element);
+        }
+      } catch { /* Stale selectors remain visible as quotes in the trusted viewer. */ }
+    }
+  });
+  document.addEventListener('click', event => {
+    if (!(event.target instanceof Element)) return;
+    if (!enabled) {
+      const link = event.target.closest('a[href]');
+      if (link && /^https?:\/\//i.test(link.getAttribute('href') || '')) {
+        link.setAttribute('target', '_blank'); link.setAttribute('rel', 'noopener noreferrer');
+      }
+      return;
+    }
+    event.preventDefault(); event.stopPropagation();
+    const selection = getSelection();
+    const element = event.target.closest('p,h1,h2,h3,h4,li,td,th,button,a,img,figure,section,div');
+    sendTarget(element, selection && !selection.isCollapsed ? selection.toString() : element?.textContent || element?.getAttribute('alt') || 'Selected element');
+  }, true);
+  let selectionTimer;
+  document.addEventListener('selectionchange', () => {
+    clearTimeout(selectionTimer);
+    selectionTimer = setTimeout(() => {
+      if (!enabled) return;
+      const selection = getSelection();
+      if (!selection || selection.isCollapsed || !text(selection.toString())) return;
+      const node = selection.anchorNode;
+      sendTarget(node instanceof Element ? node : node?.parentElement, selection.toString());
+    }, 300);
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') parent.postMessage({ type: 'review-escape' }, '*');
+  });
+  ready();
+})();
