@@ -49,6 +49,18 @@ test('owner controls reject guests and close, reopen, and resolve correctly', as
   await call('/' + slug + '/review', 'POST', { action: 'open' }, owner);
   assert.equal((await call('/' + slug + '/comments', 'POST', comment(revision), guest)).status, 201);
 });
+test('identical retries survive document updates and network changes but reject changed payloads', async () => {
+  const { slug, revision } = await document();
+  const payload = comment(revision);
+  const path = '/' + slug + '/comments';
+  assert.equal((await call(path, 'POST', payload, { ...guest, 'cf-connecting-ip': '192.0.2.1' })).status, 201);
+  await fetch(base + '/' + slug, { method: 'PUT', headers: owner, body: fixture.replace('20 customers', '5 customers') });
+  assert.equal((await call(path, 'POST', payload, { ...guest, 'cf-connecting-ip': '192.0.2.2' })).status, 200);
+  assert.equal((await call(path, 'POST', { ...payload, body: 'Different comment' }, guest)).status, 409);
+  const state = await (await call(path)).json();
+  assert.equal(state.comments.length, 1);
+  assert.equal(state.comments[0].body, payload.body);
+});
 test('origin, validation, revision, and atomic rate limits reject invalid writes', async () => {
   const { slug, revision } = await document();
   assert.equal((await call('/' + slug + '/comments', 'POST', comment(revision))).status, 403);

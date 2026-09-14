@@ -9,6 +9,7 @@
   shadow.append(style, svg, action); document.documentElement.append(host);
   let tool = 'read', allowed = false, replay = false, marks = [], undo = [], redo = [], viewport = null;
   let shortcuts = [];
+  let highlighted = null;
   let active = null, pending = null, quote = '', selector = '', frame = 0, timer;
   const clean = value => (value || '').replace(/\s+/g, ' ').trim().slice(0, 1000);
   const send = value => parent.postMessage({ ...value, revision: reviewRevision }, '*');
@@ -35,17 +36,18 @@
     if (!marks.length) { viewport = null; quote = ''; selector = ''; }
     send({ type: 'review-markup', markup: payload(), quote, selector, canUndo: undo.length > 0, canRedo: redo.length > 0 }); paint();
   }
-  function append(next) {
+  function append(next, anchor) {
     if (marks.length + next.length > 32 || [...marks, ...next].reduce((n, m) => n + (m.points?.length || 0), 0) > 2048) {
       send({ type: 'review-notice', text: 'Annotation limit reached. Post this note before adding more marks.' }); return false;
     }
-    remember(); viewport ||= { width: innerWidth, height: innerHeight }; marks = [...marks, ...next]; changed(); return true;
+    remember(); if (anchor) ({ quote, selector } = anchor);
+    viewport ||= { width: innerWidth, height: innerHeight }; marks = [...marks, ...next]; changed(); return true;
   }
   function paint() {
     if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0; svg.replaceChildren();
-      for (const mark of [...marks, ...(active ? [active.mark] : [])]) {
+      for (const mark of [...marks, ...(highlighted ? [highlighted] : []), ...(active ? [active.mark] : [])]) {
         let node;
         if (mark.kind === 'stroke') {
           node = document.createElementNS(ns, 'polyline'); node.setAttribute('points', mark.points.map(p => `${p.x - scrollX},${p.y - scrollY}`).join(' '));
@@ -65,6 +67,7 @@
     });
   }
   function setTool(next) {
+    if (next !== 'read') highlighted = null;
     tool = allowed && !replay && ['select', 'rect', 'ellipse', 'stroke', 'erase'].includes(next) ? next : 'read';
     host.style.pointerEvents = tool === 'read' ? 'none' : 'auto'; host.style.touchAction = tool === 'read' ? 'auto' : 'none';
     host.style.cursor = tool === 'read' ? '' : tool === 'erase' ? 'not-allowed' : 'crosshair'; pending = null; active = null; paint();
@@ -85,9 +88,9 @@
       undo = marks.length ? [{ marks: [], viewport: null, quote: '', selector: '' }] : []; redo = []; replay = message.replay === true; setTool('read'); paint();
       if (replay && marks.length) { const b = bounds(marks[0]); scrollTo({ top: Math.max(0, b.y - 100), left: Math.max(0, b.x - 100), behavior: 'instant' }); }
     }
-    if (message.type === 'review-clear') { marks = []; undo = []; redo = []; pending = null; replay = false; changed(); }
+    if (message.type === 'review-clear') { marks = []; undo = []; redo = []; pending = null; highlighted = null; replay = false; changed(); }
     if (message.type === 'review-reveal' && message.revision === reviewRevision && typeof message.selector === 'string') {
-      try { const node = document.querySelector(message.selector); if (node && clean(node.textContent).includes(clean(message.quote))) { node.scrollIntoView({ block: 'center' }); marks = [rect(node.getBoundingClientRect())]; replay = true; setTool('read'); paint(); } } catch { /* Quotes remain readable when a selector no longer exists. */ }
+      try { const node = document.querySelector(message.selector); if (node && clean(node.textContent).includes(clean(message.quote))) { node.scrollIntoView({ block: 'center' }); highlighted = rect(node.getBoundingClientRect()); setTool('read'); paint(); } } catch { /* Quotes remain readable when a selector no longer exists. */ }
     }
   });
   const ownControl = event => {
@@ -107,7 +110,7 @@
       const node = document.elementsFromPoint(event.clientX, event.clientY).find(node => node !== host && node !== document.body && node !== document.documentElement);
       if (!node) return;
       const target = node.closest('img,svg,canvas,video,p,h1,h2,h3,h4,li,td,th,button,a,figure') || node;
-      quote = clean(target.textContent || target.getAttribute('alt') || target.getAttribute('aria-label') || target.localName); selector = pathFor(target); append([rect(target.getBoundingClientRect())]); return;
+      append([rect(target.getBoundingClientRect())], { quote: clean(target.textContent || target.getAttribute('alt') || target.getAttribute('aria-label') || target.localName), selector: pathFor(target) }); return;
     }
     active = { id: event.pointerId, start: p, mark: tool === 'stroke' ? { kind: 'stroke', points: [p] } : { kind: tool, ...p, width: 1, height: 1 } };
     host.setPointerCapture(event.pointerId); paint();
@@ -138,8 +141,8 @@
   });
   action.addEventListener('pointerdown', event => event.preventDefault());
   action.addEventListener('click', () => {
-    if (pending) { quote = pending.quote; selector = pending.selector; if (!append(pending.marks)) return; pending = null; }
-    const b = action.getBoundingClientRect(); send({ type: 'review-target', quote: quote || `${marks.length} visual mark${marks.length === 1 ? '' : 's'}`, selector, markup: payload(), position: { x: b.left, y: b.bottom } });
+    if (pending) { if (!append(pending.marks, pending)) return; pending = null; }
+    const b = action.getBoundingClientRect(); send({ type: 'review-target', quote, selector, markup: payload(), position: { x: b.left, y: b.bottom } });
   });
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape') send({ type: 'review-escape' });

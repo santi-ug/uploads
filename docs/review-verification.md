@@ -5,12 +5,23 @@ upload token. No production Worker, database, or publisher symlink was changed.
 
 ## Automated checks
 
-- `REVIEW_TEST_URL=http://127.0.0.1:8891 pnpm test`: 10 passed, 0 failed.
+- `REVIEW_TEST_URL=http://127.0.0.1:8891 pnpm test`: 14 passed, 0 failed.
 - `pnpm typecheck`: exit 0.
 - `bash -n scripts/publish-doc`: exit 0.
 - `node --check` for both browser scripts: exit 0.
 - `wrangler d1 migrations apply REVIEWS --local`: migration applied successfully.
-- `wrangler deploy --dry-run`: successful bundle, 54.92 KiB before compression.
+- `wrangler deploy --dry-run`: successful bundle, 56.21 KiB before compression.
+
+## Pre-merge review
+
+- Standards review found three bugs: retry rejection after republishing, retry
+  rejection after an IP change, and text highlighting that trapped editing in replay.
+  Fixed all three; focused API and bridge tests pass.
+- Behavior review found two bugs: rejected target changes saved the new geometry,
+  and Undo restored geometry with the wrong quote. Fixed both; draft persistence
+  and anchor-history tests pass. Both reviewers rechecked their findings.
+- Chromium: posted a reply after clearing draft marks. The API returned the correct
+  root thread ID and unchanged reply body.
 
 ## Desktop shortcuts
 

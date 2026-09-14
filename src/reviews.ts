@@ -38,19 +38,27 @@ export async function addComment(request: Request, db: D1Database, slug: string,
     const parent = await db.prepare('SELECT revision, quote, selector FROM comments WHERE slug=? AND id=? AND parent_id IS NULL').bind(slug, parentId).first<Pick<Comment, 'revision' | 'quote' | 'selector'>>()
     if (!parent) throw new HttpError(400, 'Thread not found.')
     quote = parent.quote; selector = parent.selector; commentRevision = parent.revision
-  } else if (commentRevision !== revision) throw new HttpError(409, 'This document changed. Reload before starting a new thread.')
+  }
   const actor = await digest(`${token}:${slug}:${request.headers.get('cf-connecting-ip') ?? 'local'}`)
-  // A retry after a lost response must not create another comment.
-  const previous = await db.prepare('SELECT id FROM comments WHERE id=? AND slug=? AND actor_hash=?').bind(id, slug, actor).first()
-  if (previous) return Response.json({ id }, { status: 200 })
+  const savedMarkup = markup ? JSON.stringify(markup) : null
+  // UUID plus identical content identifies a retry, even after republishing or changing networks.
+  async function alreadySaved() {
+    const previous = await db.prepare(`SELECT ${columns} FROM comments WHERE id=? AND slug=?`).bind(id, slug).first<Comment>()
+    if (!previous) return false
+    if (previous.parent_id !== parentId || previous.revision !== commentRevision || previous.name !== name || previous.body !== body || previous.quote !== quote || previous.selector !== selector || previous.markup !== savedMarkup) throw new HttpError(409, 'This request ID already belongs to a different comment.')
+    return true
+  }
+  if (await alreadySaved()) return Response.json({ id }, { status: 200 })
+  if (!parentId && commentRevision !== revision) throw new HttpError(409, 'This document changed. Reload before starting a new thread.')
   const now = Date.now()
   const result = await db.prepare(`INSERT INTO comments (id,slug,parent_id,revision,quote,selector,name,body,created_at,actor_hash,markup)
     SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM reviews WHERE slug=? AND status='open' AND expires_at>?)
     AND (SELECT COUNT(*) FROM comments WHERE slug=?) < 500
     AND (SELECT COUNT(*) FROM comments WHERE slug=? AND created_at>?) < 30
     AND (SELECT COUNT(*) FROM comments WHERE slug=? AND actor_hash=? AND created_at>?) < 10
-    ON CONFLICT(id) DO NOTHING`).bind(id, slug, parentId, commentRevision, quote, selector, name, body, now, actor, markup ? JSON.stringify(markup) : null, slug, now, slug, slug, now - 60_000, slug, actor, now - 60_000).run()
+    ON CONFLICT(id) DO NOTHING`).bind(id, slug, parentId, commentRevision, quote, selector, name, body, now, actor, savedMarkup, slug, now, slug, slug, now - 60_000, slug, actor, now - 60_000).run()
   if (!result.meta.changes) {
+    if (await alreadySaved()) return Response.json({ id }, { status: 200 })
     const review = await findReview(db, slug)
     if (!review || review.status !== 'open' || review.expires_at <= now) throw new HttpError(403, 'Review is closed.')
     throw new HttpError(429, 'Comment limit reached. Please try again later.')

@@ -89,7 +89,7 @@
   }
   function selectTarget(next, thread = null, position, nextMarkup = markup) {
     if (busy) return;
-    if (body.value.trim() && (thread !== parentId || anchor.selector !== next.selector) && !confirm('Move your current draft to this comment target?')) return;
+    if (body.value.trim() && (thread !== parentId || anchor.selector !== next.selector || anchor.quote !== next.quote) && !confirm('Move your current draft to this comment target?')) { tell({ type: 'review-restore', markup, ...anchor, revision: frameRevision }); return; }
     anchor = next; markup = nextMarkup; parentId = thread; requestId = crypto.randomUUID(); draftRevision = frameRevision;
     if (!nextMarkup) clearMarks();
     targetLabel(); saveDraft(); if (!panel.hidden) closePanel(); openComposer(position); setTool('read');
@@ -192,6 +192,13 @@
     }
     if (message.type === 'review-markup' && !viewing && !busy && message.revision === frameRevision) {
       const next = safeMarkup(message.markup); if (message.markup && !next) return;
+      if (next === null && markup === null) return;
+      if (typeof message.quote !== 'string' || typeof message.selector !== 'string') return;
+      const nextAnchor = { quote: message.quote.slice(0, 1000), selector: message.selector.slice(0, 500) };
+      if (body.value.trim() && (parentId || anchor.selector !== nextAnchor.selector || anchor.quote !== nextAnchor.quote) && !confirm('Change the target for your current draft?')) {
+        tell({ type: 'review-restore', markup, ...anchor, revision: frameRevision }); return;
+      }
+      anchor = nextAnchor; parentId = null;
       markup = next; requestId = crypto.randomUUID(); sizeFrame(markup); saveDraft(); targetLabel();
       document.querySelector('[data-tool="undo"]').disabled = !message.canUndo;
       document.querySelector('[data-tool="redo"]').disabled = !message.canRedo;
