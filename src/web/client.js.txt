@@ -69,7 +69,7 @@
   function setTool(next) {
     tool = data.open && !viewing && !busy ? next : 'read';
     for (const button of document.querySelectorAll('[data-tool][aria-pressed]')) button.setAttribute('aria-pressed', String(button.dataset.tool === tool));
-    tell({ type: 'review-tool', tool, allowed: data.open && !viewing && !busy });
+    tell({ type: 'review-tool', tool, allowed: data.open && !viewing && !busy, shortcuts: [...document.querySelectorAll('[data-shortcut]')].map(button => button.dataset.shortcut) });
     const hints = { read: 'Select text to comment. Read also lets you scroll.', select: 'Tap an element, then Comment beside it.', rect: 'Drag a region, then Comment beside it.', ellipse: 'Drag to circle anything, including images.', stroke: 'Draw over the page, then Comment beside the marks.', erase: 'Tap a mark to remove it. Undo restores it.' };
     byId('instruction').textContent = hints[tool];
   }
@@ -153,6 +153,13 @@
   }
   byId('show').addEventListener('click', () => panel.hidden ? openPanel(true) : closePanel());
   byId('close').addEventListener('click', closePanel);
+  function activateShortcut(key) {
+    if (busy || viewing || !popover.hidden) return false;
+    const button = [...document.querySelectorAll('[data-shortcut]')].find(button => button.dataset.shortcut === key);
+    if (!button || button.disabled) return false;
+    button.click(); return true;
+  }
+  addEventListener('keydown', event => { const key = reviewShortcut(event); if (key && activateShortcut(key)) event.preventDefault(); });
   for (const button of document.querySelectorAll('[data-tool]')) button.addEventListener('click', () => {
     returnFocus = button;
     if (['undo', 'redo'].includes(button.dataset.tool)) { tell({ type: 'review-history', action: button.dataset.tool }); return; }
@@ -170,6 +177,7 @@
   addEventListener('message', event => {
     if (event.source !== frame.contentWindow || !event.data || typeof event.data !== 'object') return;
     const message = event.data;
+    if (message.type === 'review-shortcut' && message.revision === frameRevision && typeof message.key === 'string') activateShortcut(message.key);
     if (message.type === 'review-ready' && typeof message.revision === 'string' && /^[a-f0-9]{64}$/.test(message.revision)) {
       frameRevision = message.revision;
       if (typeof message.title === 'string' && message.title.trim()) { byId('title').textContent = message.title.slice(0, 200); document.title = message.title.slice(0, 200) + ' · Review'; }

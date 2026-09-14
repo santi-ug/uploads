@@ -2,6 +2,7 @@ import { authorize, digest, headers, HttpError, readText } from './http'
 import { addComment, findReview, listComments, manageReview, resolveComment } from './reviews'
 import { contentResponse, viewerResponse } from './viewer'
 import client from './web/client.js.txt'
+import shortcuts from './web/shortcuts.js.txt'
 import styles from './web/styles.css.txt'
 
 type Env = Cloudflare.Env & { UPLOAD_TOKEN: string }
@@ -23,7 +24,7 @@ export default {
 
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url)
-  if (request.method === 'GET' && url.pathname === '/_review/client.js') return new Response(client, { headers: { 'content-type': 'text/javascript; charset=utf-8' } })
+  if (request.method === 'GET' && url.pathname === '/_review/client.js') return new Response(shortcuts + '\n' + client, { headers: { 'content-type': 'text/javascript; charset=utf-8' } })
   if (request.method === 'GET' && url.pathname === '/_review/styles.css') return new Response(styles, { headers: { 'content-type': 'text/css; charset=utf-8' } })
   const [, slug = '', action = '', id = '', extra] = url.pathname.split('/')
   if (!slugPattern.test(slug) || extra !== undefined) throw new HttpError(404, 'Not found.')

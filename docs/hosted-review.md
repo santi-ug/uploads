@@ -13,6 +13,12 @@ The editor opens near the target on desktop and as a keyboard-aware sheet on mob
 Closing preserves the draft. Comments remain in a separate drawer or desktop panel.
 The system font and light/dark themes are unchanged.
 
+Desktop buttons show shortcut badges: Q Read, V Select, R Region, C Circle, D Draw,
+E Erase, Z Undo, Shift+Z Redo. Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z work outside editable
+fields too. Keys work in the viewer and embedded document; typing, composition,
+held-key repeats, and open comment editors do not switch tools. Touch layouts hide
+the badges without changing their buttons.
+
 ## Workflow
 
 ```sh

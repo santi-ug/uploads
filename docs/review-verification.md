@@ -5,12 +5,22 @@ upload token. No production Worker, database, or publisher symlink was changed.
 
 ## Automated checks
 
-- `REVIEW_TEST_URL=http://127.0.0.1:8891 pnpm test`: 9 passed, 0 failed.
+- `REVIEW_TEST_URL=http://127.0.0.1:8891 pnpm test`: 10 passed, 0 failed.
 - `pnpm typecheck`: exit 0.
 - `bash -n scripts/publish-doc`: exit 0.
 - `node --check` for both browser scripts: exit 0.
 - `wrangler d1 migrations apply REVIEWS --local`: migration applied successfully.
-- `wrangler deploy --dry-run`: successful bundle, 52.41 KiB before compression.
+- `wrangler deploy --dry-run`: successful bundle, 54.92 KiB before compression.
+
+## Desktop shortcuts
+
+- Chromium: C selected Circle; after focusing the embedded document, D selected Draw.
+- Typing C in the comment textarea inserted `c` and kept Read selected.
+- Eight top-right shortcut badges rendered without page overflow. iPhone Safari
+  retained the icon-only bar. Existing 44px button sizes and color tokens are unchanged.
+- The bridge test covers registered keys, undo modifiers, editable fields, IME,
+  held keys, prevented events, unknown shortcuts, and closed-review suppression.
+- Physical-keyboard shortcuts in Safari are not yet manually verified.
 
 ## Visual markup checks, September 14
 

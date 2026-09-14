@@ -1,0 +1,8 @@
+// Shared by the viewer and its sandboxed document. The toolbar registers the keys.
+function reviewShortcut(event) {
+  if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey) return null;
+  if (event.composedPath().some(node => node.isContentEditable || node.matches?.('input,textarea,select,[role="textbox"],[role="combobox"]'))) return null;
+  const key = event.key.toLowerCase();
+  if ((event.metaKey || event.ctrlKey) && key !== 'z') return null;
+  return (event.shiftKey ? 'Shift+' : '') + key;
+}

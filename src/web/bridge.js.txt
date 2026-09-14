@@ -8,6 +8,7 @@
   const action = document.createElement('button'); action.textContent = 'Comment'; action.hidden = true;
   shadow.append(style, svg, action); document.documentElement.append(host);
   let tool = 'read', allowed = false, replay = false, marks = [], undo = [], redo = [], viewport = null;
+  let shortcuts = [];
   let active = null, pending = null, quote = '', selector = '', frame = 0, timer;
   const clean = value => (value || '').replace(/\s+/g, ' ').trim().slice(0, 1000);
   const send = value => parent.postMessage({ ...value, revision: reviewRevision }, '*');
@@ -73,7 +74,7 @@
     if (event.source !== parent || !event.data || typeof event.data !== 'object') return;
     const message = event.data;
     if (message.type === 'review-ping') ready();
-    if (message.type === 'review-tool') { allowed = message.allowed === true; setTool(message.tool); }
+    if (message.type === 'review-tool') { allowed = message.allowed === true; shortcuts = Array.isArray(message.shortcuts) ? message.shortcuts.filter(key => typeof key === 'string') : []; setTool(message.tool); }
     if (message.type === 'review-history' && !replay) {
       if (message.action === 'undo' && undo.length) { redo.push(state()); restore(undo.pop()); }
       if (message.action === 'redo' && redo.length) { undo.push(state()); restore(redo.pop()); }
@@ -140,6 +141,10 @@
     if (pending) { quote = pending.quote; selector = pending.selector; if (!append(pending.marks)) return; pending = null; }
     const b = action.getBoundingClientRect(); send({ type: 'review-target', quote: quote || `${marks.length} visual mark${marks.length === 1 ? '' : 's'}`, selector, markup: payload(), position: { x: b.left, y: b.bottom } });
   });
-  document.addEventListener('keydown', event => { if (event.key === 'Escape') send({ type: 'review-escape' }); });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') send({ type: 'review-escape' });
+    const key = reviewShortcut(event);
+    if (allowed && !replay && shortcuts.includes(key)) { event.preventDefault(); send({ type: 'review-shortcut', key }); }
+  });
   addEventListener('scroll', paint, { passive: true }); addEventListener('resize', paint); ready();
 })();

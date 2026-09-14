@@ -1,4 +1,5 @@
 import bridge from './web/bridge.js.txt'
+import shortcuts from './web/shortcuts.js.txt'
 export function contentResponse(html: string, instrument: boolean, revision: string) {
   const response = new Response(html, { headers: {
     'content-type': 'text/html; charset=utf-8',
@@ -6,7 +7,7 @@ export function contentResponse(html: string, instrument: boolean, revision: str
   } })
   if (!instrument) return response
   return new HTMLRewriter().onDocument({ end(end) {
-    end.append(`<script>const reviewRevision=${JSON.stringify(revision)};${bridge}</script>`, { html: true })
+    end.append(`<script>const reviewRevision=${JSON.stringify(revision)};${shortcuts}\n${bridge}</script>`, { html: true })
   } }).transform(response)
 }
 export function viewerResponse(slug: string) {
@@ -20,7 +21,8 @@ export function viewerResponse(slug: string) {
     undo: 'M8 4 3 9l5 5 M3 9h10a7 7 0 0 1 0 14',
     redo: 'm16 4 5 5-5 5 M21 9h-10a7 7 0 0 0 0 14',
   }
-  const tool = (key: keyof typeof paths, label: string) => `<button type="button" data-tool="${key}" aria-label="${label}" title="${label}" ${key === 'undo' || key === 'redo' ? 'disabled' : `aria-pressed="${key === 'read'}"`}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[key]}"/></svg></button>`
+  const keys = { read: 'q', select: 'v', rect: 'r', ellipse: 'c', stroke: 'd', erase: 'e', undo: 'z', redo: 'Shift+z' } satisfies Record<keyof typeof paths, string>
+  const tool = (key: keyof typeof paths, label: string) => `<button type="button" data-tool="${key}" data-shortcut="${keys[key]}" aria-keyshortcuts="${keys[key]}" aria-label="${label}" title="${label} (${keys[key].toUpperCase()})" ${key === 'undo' || key === 'redo' ? 'disabled' : `aria-pressed="${key === 'read'}"`}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${paths[key]}"/></svg><kbd aria-hidden="true">${keys[key] === 'Shift+z' ? '⇧Z' : keys[key].toUpperCase()}</kbd></button>`
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Document review</title><link rel="stylesheet" href="/_review/styles.css"><script src="/_review/client.js" defer></script></head>
 <body data-slug="${slug}"><header><strong id="title">Document review</strong><div class="actions"><button id="current" hidden>Back to current</button><button id="show" aria-expanded="false" aria-controls="panel">Comments <span id="count">0</span></button></div></header>
 <main><div id="stage"><iframe id="document" title="Shared document" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" src="/${slug}/content"></iframe></div>
