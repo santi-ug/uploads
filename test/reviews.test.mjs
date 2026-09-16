@@ -118,6 +118,19 @@ test('republish keeps earlier threads and revoked links cannot be read or resurr
   for (const suffix of ['', '/content', '/comments']) assert.equal((await call('/' + slug + suffix)).status, 404);
   assert.equal((await fetch(base + '/' + slug, { method: 'PUT', headers: owner, body: fixture })).status, 410);
 });
+test('readable title UUID slugs route alongside legacy opaque slugs', async () => {
+  const readable = 'void-button-hierarchy-019f2c3a-4b5c-6d7e-8f90-abcdef123456';
+  assert.equal((await fetch(base + '/' + readable, { method: 'PUT', headers: owner, body: fixture })).status, 200);
+  assert.equal((await call('/' + readable)).status, 200);
+  const opaque = randomBytes(11).toString('hex');
+  assert.equal((await fetch(base + '/' + opaque, { method: 'PUT', headers: owner, body: fixture })).status, 200);
+  assert.equal((await call('/' + opaque)).status, 200);
+});
+test('malformed readable slugs are rejected', async () => {
+  for (const slug of ['Title With Spaces-019f2c3a-4b5c-6d7e-8f90-abcdef123456', 'title-019f2c3a-4b5c-6d7e-8f90-abcdef12345', 'x'.repeat(161)]) {
+    assert.equal((await call('/' + slug)).status, 404);
+  }
+});
 test('review viewer isolates authored HTML and leaves the stored HTML intact', async () => {
   const { slug } = await document();
   const shell = await call('/' + slug); const shellHtml = await shell.text();

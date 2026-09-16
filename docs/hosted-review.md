@@ -1,5 +1,10 @@
 # Hosted document review
 
+New public URLs combine a normalized document title and a full UUID, for example:
+`https://docs.santiu.workers.dev/void-button-hierarchy-019f2c3a-4b5c-6d7e-8f90-abcdef123456`.
+Existing opaque hexadecimal URLs remain valid. The publisher stores the generated
+slug locally, so republishing a file never changes its URL.
+
 ## Decision
 
 Keep published HTML in the existing KV namespace and store reviews in D1. Serve a

@@ -6,7 +6,7 @@ import shortcuts from './web/shortcuts.js.txt'
 import styles from './web/styles.css.txt'
 
 type Env = Cloudflare.Env & { UPLOAD_TOKEN: string }
-const slugPattern = /^[0-9a-f]{22,64}$/
+const slugPattern = /^(?:[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{22,64})$/
 
 export default {
   async fetch(request, env) {
@@ -27,7 +27,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === 'GET' && url.pathname === '/_review/client.js') return new Response(shortcuts + '\n' + client, { headers: { 'content-type': 'text/javascript; charset=utf-8' } })
   if (request.method === 'GET' && url.pathname === '/_review/styles.css') return new Response(styles, { headers: { 'content-type': 'text/css; charset=utf-8' } })
   const [, slug = '', action = '', id = '', extra] = url.pathname.split('/')
-  if (!slugPattern.test(slug) || extra !== undefined) throw new HttpError(404, 'Not found.')
+  if (!slugPattern.test(slug) || slug.length > 160 || extra !== undefined) throw new HttpError(404, 'Not found.')
   if (action === '' && request.method === 'PUT') {
     authorize(request, env.UPLOAD_TOKEN)
     const tombstone = await findReview(env.REVIEWS, slug)

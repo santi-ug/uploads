@@ -18,8 +18,10 @@ Link-only HTML host for writeups, mocks, and client-facing documents.
 
 - `src/index.ts` serves `GET /<slug>` publicly and gates `PUT`/`DELETE` behind a bearer token.
 - `scripts/publish-doc` publishes a local file and prints its URL. Symlinked to `~/.local/bin/publish-doc`.
-- Slugs are 22 hex chars, generated locally and cached in `~/.config/docs-publish/manifest.tsv`
-  so re-publishing a file keeps the link already shared.
+- New slugs combine the normalized document title and a full UUID, for example
+  `void-button-hierarchy-019f2c3a-4b5c-6d7e-8f90-abcdef123456`. They are generated
+  locally and cached in `~/.config/docs-publish/manifest.tsv`, so re-publishing a
+  file keeps the link already shared. Existing opaque hexadecimal slugs remain valid.
 - The token lives in the macOS keychain under `docs-upload-token` and as the Worker secret
   `UPLOAD_TOKEN`. It is never stored in this repo.
 
