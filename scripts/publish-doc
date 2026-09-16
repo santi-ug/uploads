@@ -10,7 +10,7 @@
 #   publish-doc --open-review <file.html>    reopen for 30 days
 #   publish-doc --resolve <file.html> <id>   resolve a thread
 #
-# A doc keeps its slug across re-publishes, so a link already sent to a client
+# A doc keeps its readable slug across re-publishes, so a link already sent to a client
 # keeps working and shows the latest version.
 set -euo pipefail
 
@@ -30,9 +30,21 @@ token() {
   security add-generic-password -s $KEYCHAIN_SERVICE -a \"\$USER\" -w '<token>'"
 }
 
+html_title_or_filename() {
+	local path="$1" title
+	title="$(sed -nE 's/.*<title[^>]*>([^<]*)<\/title>.*/\1/ip' "$path" | head -1)"
+	[ -n "$title" ] || title="$(basename "$path" .html)"
+	printf '%s' "$title"
+}
+
+slugify() {
+	printf '%s' "$1" | tr '[:upper:]' '[:lower:]' |
+		sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-72 | sed -E 's/-+$//'
+}
+
 # Slug for this file, created on first publish and reused forever after.
 slug_for() {
-	local path="$1" existing
+	local path="$1" existing title base id
 	mkdir -p "$(dirname "$MANIFEST")"
 	touch "$MANIFEST"
 	existing="$(awk -F'\t' -v p="$path" '$1 == p { print $2 }' "$MANIFEST" | head -1)"
@@ -40,10 +52,14 @@ slug_for() {
 		echo "$existing"
 		return
 	fi
-	local fresh
-	fresh="$(openssl rand -hex 11)"
-	printf '%s\t%s\n' "$path" "$fresh" >>"$MANIFEST"
-	echo "$fresh"
+	title="$(html_title_or_filename "$path")"
+	base="$(slugify "$title")"
+	[ -n "$base" ] || base=document
+	local random_hex
+	random_hex="$(openssl rand -hex 16)"
+	id="${random_hex:0:8}-${random_hex:8:4}-${random_hex:12:4}-${random_hex:16:4}-${random_hex:20:12}"
+	printf '%s\t%s-%s\n' "$path" "$base" "$id" >>"$MANIFEST"
+	echo "$base-$id"
 }
 
 existing_slug() {
@@ -109,7 +125,7 @@ case "${1:---help}" in
 	[ -f "$file" ] || die "no such file: $file"
 	path="$(cd "$(dirname "$file")" && pwd)/$(basename "$file")"
 	slug="$(slug_for "$path")"
-	title="$(basename "$path" .html)"
+	title="$(html_title_or_filename "$path")"
 	curl -fsS -X PUT \
 		-H "authorization: Bearer $(token)" \
 		-H "content-type: text/html; charset=utf-8" \
