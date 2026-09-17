@@ -114,6 +114,19 @@
   const button = (label, action) => {
     const node = element('button', label); node.type = 'button'; node.addEventListener('click', action); return node;
   };
+  // Deterministic per-name color so the same commenter always gets the same
+  // avatar, without tracking identity beyond the self-reported name.
+  function avatarColor(value) {
+    let hash = 0; for (let i = 0; i < value.length; i++) hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+    return 'hsl(' + (hash % 360) + ' 55% 45%)';
+  }
+  function commentHead(commenter, when, suffix) {
+    const head = element('div', '', 'comment-head');
+    const dot = element('span', (commenter.trim()[0] || '?').toUpperCase(), 'avatar');
+    dot.style.background = avatarColor(commenter);
+    head.append(dot, element('span', commenter + ' · ' + when + suffix, 'meta'));
+    return head;
+  }
   // A native notification when the open count grows, so feedback surfaces without
   // requiring a chat message back to whoever is waiting on it. Same-origin, no new
   // server capability: the comment count was already public and already fetched.
@@ -138,13 +151,13 @@
     const list = byId('threads'); list.replaceChildren();
     for (const comment of roots.filter(comment => byId('resolved').checked || comment.status === 'open')) {
       const article = document.createElement('article');
-      article.append(element('div', comment.name + ' · ' + new Date(comment.created_at).toLocaleString() + (comment.status === 'resolved' ? ' · Resolved' : ''), 'meta'));
+      article.append(commentHead(comment.name, new Date(comment.created_at).toLocaleString(), comment.status === 'resolved' ? ' · Resolved' : ''));
       if (comment.quote) article.append(element('blockquote', comment.quote));
       if (comment.revision !== frameRevision) article.append(element('p', 'Earlier version', 'hint'));
       article.append(element('p', comment.body, 'comment-body'));
       for (const reply of data.comments.filter(item => item.parent_id === comment.id)) {
         const row = element('div', '', 'reply');
-        row.append(element('div', reply.name + ' · ' + new Date(reply.created_at).toLocaleString(), 'meta'), element('p', reply.body, 'comment-body')); article.append(row);
+        row.append(commentHead(reply.name, new Date(reply.created_at).toLocaleString(), ''), element('p', reply.body, 'comment-body')); article.append(row);
       }
       const actions = element('div', '', 'thread-actions');
       if (data.open && !viewing) actions.append(button('Reply', () => selectTarget({ quote: comment.quote, selector: comment.selector }, comment.id, undefined, null)));
