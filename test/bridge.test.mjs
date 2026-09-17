@@ -90,3 +90,22 @@ test('revealing a text anchor does not trap the next drawing tool in replay', ()
   assert.equal(b.latest().markup.marks.length, 1);
   assert.equal(b.latest().markup.marks[0].kind, 'rect');
 });
+
+test('Enter opens the comment target for a freshly drawn mark', () => {
+  const b = bridge(); b.tool('rect');
+  b.pointer('pointerdown', 10, 10); b.pointer('pointermove', 50, 50); b.pointer('pointerup', 50, 50);
+  b.emit('keydown', { key: 'Enter', composedPath: () => [], preventDefault() {} });
+  const target = b.messages.findLast(message => message.type === 'review-target');
+  assert.ok(target);
+  assert.equal(target.markup.marks[0].kind, 'rect');
+});
+
+test('Enter is ignored while typing and when there is nothing pending', () => {
+  const b = bridge(); b.tool('rect');
+  b.emit('keydown', { key: 'Enter', composedPath: () => [], preventDefault() {} });
+  assert.equal(b.messages.some(message => message.type === 'review-target'), false);
+  b.pointer('pointerdown', 10, 10); b.pointer('pointermove', 50, 50); b.pointer('pointerup', 50, 50);
+  const before = b.messages.length;
+  b.emit('keydown', { key: 'Enter', composedPath: () => [{ matches: () => true }], preventDefault() {} });
+  assert.equal(b.messages.slice(before).length, 0);
+});

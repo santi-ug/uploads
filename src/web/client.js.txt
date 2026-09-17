@@ -6,21 +6,31 @@
   const slug = document.body.dataset.slug;
   const endpoint = '/' + slug + '/comments';
   const draftKey = 'review-draft:' + slug;
+  const nameKey = 'review-name';
   let data = { revision: '', open: false, comments: [] };
   let frameRevision = '', busy = false, loading = false, tool = 'read', viewing = null, loadingSnapshot = false;
+  let notifiedCount = 0;
   let markup = null;
   const popover = byId('compose-popover');
   let anchor = { quote: '', selector: '' }, parentId = null, requestId = crypto.randomUUID();
   let returnFocus = byId('show');
   function saveDraft() {
-    try { localStorage.setItem(draftKey, JSON.stringify({ name: name.value, body: body.value, anchor, markup, parentId, requestId, revision: draftRevision || frameRevision })); } catch { /* Posting works without browser storage. */ }
+    try {
+      localStorage.setItem(nameKey, name.value);
+      localStorage.setItem(draftKey, JSON.stringify({ body: body.value, anchor, markup, parentId, requestId, revision: draftRevision || frameRevision }));
+    } catch { /* Posting works without browser storage. */ }
     byId('draft').hidden = !body.value || !popover.hidden || Boolean(viewing);
   }
+  // The name is remembered globally (not per document) so it survives a new writeup's new slug.
+  try {
+    const savedName = localStorage.getItem(nameKey);
+    if (typeof savedName === 'string') name.value = savedName.slice(0, 60);
+  } catch { /* A missing or invalid saved name never prevents reading. */ }
   let draftRevision = '';
   try {
     const draft = JSON.parse(localStorage.getItem(draftKey) || 'null');
-    if (draft && typeof draft.name === 'string' && typeof draft.body === 'string') {
-      name.value = draft.name.slice(0, 60); body.value = draft.body.slice(0, 2000);
+    if (draft && typeof draft.body === 'string') {
+      body.value = draft.body.slice(0, 2000);
       if (draft.anchor && typeof draft.anchor.quote === 'string' && typeof draft.anchor.selector === 'string') anchor = { quote: draft.anchor.quote.slice(0, 1000), selector: draft.anchor.selector.slice(0, 500) };
       if (typeof draft.parentId === 'string') parentId = draft.parentId;
       if (typeof draft.requestId === 'string') requestId = draft.requestId;
@@ -38,6 +48,9 @@
     if (focus) byId('close').focus();
   }
   function closePanel() {
+    // Desktop keeps the panel open permanently (Figma/Google-Docs style, no hidden inbox);
+    // only the mobile bottom sheet actually closes.
+    if (!matchMedia('(max-width:760px)').matches) return;
     panel.hidden = true; document.body.classList.remove('panel-open'); byId('show').setAttribute('aria-expanded', 'false');
     returnFocus.focus();
   }
@@ -101,6 +114,15 @@
   const button = (label, action) => {
     const node = element('button', label); node.type = 'button'; node.addEventListener('click', action); return node;
   };
+  // A native notification when the open count grows, so feedback surfaces without
+  // requiring a chat message back to whoever is waiting on it. Same-origin, no new
+  // server capability: the comment count was already public and already fetched.
+  function notify(openCount) {
+    if (typeof Notification === 'undefined' || openCount <= notifiedCount) { notifiedCount = openCount; return; }
+    if (Notification.permission === 'default') Notification.requestPermission();
+    if (Notification.permission === 'granted') new Notification('New review feedback', { body: openCount + ' open comment' + (openCount === 1 ? '' : 's') + ' on ' + (byId('title').textContent || 'this document') });
+    notifiedCount = openCount;
+  }
   function render() {
     name.disabled = busy; body.disabled = busy;
     byId('review-state').textContent = data.open ? 'Review open · comments are saved online.' : 'Review closed · the document and comments remain readable.';
@@ -110,7 +132,9 @@
     if (!data.open || viewing || busy) for (const action of ['undo', 'redo']) document.querySelector('[data-tool="' + action + '"]').disabled = true;
     if (!data.open) setTool('read');
     const roots = data.comments.filter(comment => comment.parent_id === null);
-    byId('count').textContent = roots.filter(comment => comment.status === 'open').length;
+    const openCount = roots.filter(comment => comment.status === 'open').length;
+    byId('count').textContent = openCount;
+    notify(openCount);
     const list = byId('threads'); list.replaceChildren();
     for (const comment of roots.filter(comment => byId('resolved').checked || comment.status === 'open')) {
       const article = document.createElement('article');
@@ -170,6 +194,7 @@
   byId('new').addEventListener('click', () => selectTarget({ quote: '', selector: '' }, null, undefined, null));
   byId('clear-target').addEventListener('click', () => { if (confirm('Remove the selected target and marks? Your comment text stays.')) { clearMarks(); anchor = { quote: '', selector: '' }; parentId = null; draftRevision = frameRevision; targetLabel(); saveDraft(); render(); } });
   byId('refresh').addEventListener('click', refresh);
+  byId('save').addEventListener('click', () => void refresh());
   byId('resolved').addEventListener('change', render);
   form.addEventListener('input', () => { requestId = crypto.randomUUID(); saveDraft(); });
   addEventListener('keydown', event => { if (event.key === 'Escape') { setTool('read'); if (!popover.hidden) closeComposer(); else if (!panel.hidden) closePanel(); } if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !popover.hidden) { event.preventDefault(); form.requestSubmit(); } });
@@ -252,6 +277,7 @@
   form.addEventListener('focusin', () => requestAnimationFrame(keyboardLayout));
   visualViewport?.addEventListener('scroll', keyboardLayout);
   targetLabel();
+  if (!matchMedia('(max-width:760px)').matches) openPanel();
   frame.contentWindow?.postMessage({ type: 'review-ping' }, '*');
   if (body.value) openComposer();
   void refresh();

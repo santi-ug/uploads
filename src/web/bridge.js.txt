@@ -140,12 +140,19 @@
     }, 200);
   });
   action.addEventListener('pointerdown', event => event.preventDefault());
-  action.addEventListener('click', () => {
+  function openComment() {
     if (pending) { if (!append(pending.marks, pending)) return; pending = null; }
     const b = action.getBoundingClientRect(); send({ type: 'review-target', quote, selector, markup: payload(), position: { x: b.left, y: b.bottom } });
-  });
+  }
+  action.addEventListener('click', openComment);
   document.addEventListener('keydown', event => {
     if (event.key === 'Escape') send({ type: 'review-escape' });
+    // Same visibility condition paint() uses for the floating Comment button
+    // (that value updates on the next animation frame, so it lags a fresh mark).
+    if (event.key === 'Enter' && !event.repeat && allowed && !replay && active === null && (marks.length || pending)) {
+      const editable = event.composedPath().some(node => node.isContentEditable || node.matches?.('input,textarea,select,[role="textbox"],[role="combobox"]'));
+      if (!editable) { event.preventDefault(); openComment(); }
+    }
     const key = reviewShortcut(event);
     if (allowed && !replay && shortcuts.includes(key)) { event.preventDefault(); send({ type: 'review-shortcut', key }); }
   });
