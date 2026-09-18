@@ -96,7 +96,7 @@
   }
   function targetLabel() {
     byId('composer-title').textContent = parentId ? 'Reply' : 'New comment';
-    byId('target').textContent = anchor.quote || (markup ? markup.marks.length + ' visual marks' : '');
+    byId('target').textContent = anchor.quote || (markup ? markup.marks.length + ' visual mark' + (markup.marks.length === 1 ? '' : 's') : '');
     byId('target').hidden = !anchor.quote && !markup;
     byId('clear-target').hidden = !anchor.quote && !parentId && !markup;
   }
