@@ -95,6 +95,10 @@ pnpm typecheck
 pnpm exec wrangler deploy --dry-run
 ```
 
+For phone previews, bind Wrangler to `0.0.0.0` and open the Mac's tailnet address
+with the same port. The review client supports HTTP previews: comment retry IDs
+use cryptographic random bytes when the browser does not expose `randomUUID`.
+
 The integration tests refuse a non-loopback URL and use only a dummy local secret.
 The local publisher can use DOCS_BASE_URL, DOCS_MANIFEST, and DOCS_UPLOAD_TOKEN to
 exercise the full command without touching the real manifest or Keychain secret.
