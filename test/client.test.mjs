@@ -92,3 +92,50 @@ test('on desktop the comments panel opens on load and stays open through interac
   emit({ type: 'review-target', quote: 'B', selector: 'p:nth-of-type(2)', markup: null });
   assert.equal(node('panel').hidden, false, 'selecting a comment target used to close the sidebar; it should not on desktop');
 });
+
+// Exercise actual click and shortcut handlers with the crypto API available on HTTP.
+test('HTTP review pages initialize tools and generate valid comment retry IDs', async () => {
+  const nodes = new Map(), listeners = new Map(), sent = [], drafts = [];
+  const on = (map, type, fn) => map.set(type, [...map.get(type) || [], fn]);
+  const element = () => {
+    const handlers = new Map(), attributes = new Map();
+    return { value: '', hidden: true, style: {}, dataset: {}, disabled: false, offsetHeight: 100,
+      addEventListener: (type, fn) => on(handlers, type, fn),
+      click() { if (!this.disabled) handlers.get('click')?.forEach(fn => fn()); },
+      setAttribute: (key, value) => attributes.set(key, value), getAttribute: key => attributes.get(key),
+      focus() {}, contains: () => false, append() {}, replaceChildren() {},
+      getBoundingClientRect: () => ({ left: 0, top: 0 }), classList: { add() {}, remove() {} },
+      contentWindow: { postMessage: message => sent.push(structuredClone(message)) } };
+  };
+  const node = id => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
+  const buttons = ['read', 'rect', 'undo', 'redo'].map((tool, index) => {
+    const button = node(tool); button.dataset = { tool, shortcut: ['q', 'r', 'z', 'Shift+z'][index] }; return button;
+  });
+  let entropyCalls = 0;
+  const context = {
+    document: { getElementById: node, body: node('page'), createElement: element,
+      querySelector: selector => buttons.find(button => selector.includes('"' + button.dataset.tool + '"')),
+      querySelectorAll: selector => selector.includes(':not') ? [node('rect')] : selector.includes('aria-pressed') ? buttons.slice(0, 2) : buttons },
+    localStorage: { getItem: () => null, setItem: (key, value) => { if (key.startsWith('review-draft:')) drafts.push(JSON.parse(value)); } },
+    crypto: { getRandomValues: bytes => { bytes.fill(++entropyCalls); return bytes; } },
+    addEventListener: (type, fn) => on(listeners, type, fn),
+    matchMedia: () => ({ matches: false }), innerWidth: 1400, innerHeight: 900, HTMLElement: class {},
+    confirm: () => true, visualViewport: null, setInterval: () => 0,
+    fetch: async () => ({ ok: true, json: async () => ({ revision: 'a'.repeat(64), open: true, comments: [] }) }),
+  };
+  context.document.body.dataset.slug = 'http-fixture';
+  vm.runInNewContext(readFileSync(new URL('../src/web/shortcuts.js.txt', import.meta.url), 'utf8') + '\n' + readFileSync(new URL('../src/web/client.js.txt', import.meta.url), 'utf8'), context);
+  await new Promise(setImmediate);
+  node('rect').click();
+  assert.equal(node('rect').getAttribute('aria-pressed'), 'true');
+  node('read').click();
+  let prevented = false;
+  listeners.get('keydown').forEach(fn => fn({ key: 'r', composedPath: () => [], preventDefault: () => { prevented = true; } }));
+  assert.equal(prevented, true);
+  assert.equal(sent.at(-1).tool, 'rect');
+  node('new').click(); node('new').click();
+  const ids = drafts.map(draft => draft.requestId);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.equal(ids.length, 2);
+  for (const id of ids) assert.match(id, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+});

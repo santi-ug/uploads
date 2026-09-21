@@ -7,12 +7,21 @@
   const endpoint = '/' + slug + '/comments';
   const draftKey = 'review-draft:' + slug;
   const nameKey = 'review-name';
+  // Tailnet HTTP previews lack randomUUID; getRandomValues works on HTTP too.
+  function newRequestId() {
+    if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
+  }
   let data = { revision: '', open: false, comments: [] };
   let frameRevision = '', busy = false, loading = false, tool = 'read', viewing = null, loadingSnapshot = false;
   let notifiedCount = 0;
   let markup = null;
   const popover = byId('compose-popover');
-  let anchor = { quote: '', selector: '' }, parentId = null, requestId = crypto.randomUUID();
+  let anchor = { quote: '', selector: '' }, parentId = null, requestId = newRequestId();
   let returnFocus = byId('show');
   function saveDraft() {
     try {
@@ -103,7 +112,7 @@
   function selectTarget(next, thread = null, position, nextMarkup = markup) {
     if (busy) return;
     if (body.value.trim() && (thread !== parentId || anchor.selector !== next.selector || anchor.quote !== next.quote) && !confirm('Move your current draft to this comment target?')) { tell({ type: 'review-restore', markup, ...anchor, revision: frameRevision }); return; }
-    anchor = next; markup = nextMarkup; parentId = thread; requestId = crypto.randomUUID(); draftRevision = frameRevision;
+    anchor = next; markup = nextMarkup; parentId = thread; requestId = newRequestId(); draftRevision = frameRevision;
     if (!nextMarkup) clearMarks();
     targetLabel(); saveDraft(); if (!panel.hidden) closePanel(); openComposer(position); setTool('read');
   }
@@ -209,7 +218,7 @@
   byId('refresh').addEventListener('click', refresh);
   byId('save').addEventListener('click', () => void refresh());
   byId('resolved').addEventListener('change', render);
-  form.addEventListener('input', () => { requestId = crypto.randomUUID(); saveDraft(); });
+  form.addEventListener('input', () => { requestId = newRequestId(); saveDraft(); });
   addEventListener('keydown', event => { if (event.key === 'Escape') { setTool('read'); if (!popover.hidden) closeComposer(); else if (!panel.hidden) closePanel(); } if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !popover.hidden) { event.preventDefault(); form.requestSubmit(); } });
   frame.addEventListener('load', () => frame.contentWindow?.postMessage({ type: 'review-ping' }, '*'));
   addEventListener('message', event => {
@@ -237,7 +246,7 @@
         tell({ type: 'review-restore', markup, ...anchor, revision: frameRevision }); return;
       }
       anchor = nextAnchor; parentId = null;
-      markup = next; requestId = crypto.randomUUID(); sizeFrame(markup); saveDraft(); targetLabel();
+      markup = next; requestId = newRequestId(); sizeFrame(markup); saveDraft(); targetLabel();
       document.querySelector('[data-tool="undo"]').disabled = !message.canUndo;
       document.querySelector('[data-tool="redo"]').disabled = !message.canRedo;
     }
@@ -255,7 +264,7 @@
       const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: requestId, name: name.value, body: body.value, revision: frameRevision, ...anchor, markup, parentId }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Could not post.');
-      body.value = ''; clearMarks(); anchor = { quote: '', selector: '' }; parentId = null; requestId = crypto.randomUUID(); saveDraft(); status.textContent = 'Posted.';
+      body.value = ''; clearMarks(); anchor = { quote: '', selector: '' }; parentId = null; requestId = newRequestId(); saveDraft(); status.textContent = 'Posted.';
       closeComposer(); byId('instruction').textContent = 'Comment saved.';
       await refresh();
     } catch (error) { status.textContent = 'Not sent. ' + error.message; }
