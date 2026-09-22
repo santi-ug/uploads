@@ -1,7 +1,32 @@
 # Review verification
 
-All runtime checks used local Wrangler on port 8891 with local KV/D1 and a dummy
-upload token. No production Worker, database, or publisher symlink was changed.
+Pre-merge checks below used local Wrangler on port 8891 with local KV/D1 and a
+dummy upload token. The production rollout followed explicit user approval.
+
+## Production rollout, September 14
+
+- Deployed Worker version `3b86fb26-76e0-498c-bc98-36983479ac7d` to
+  `https://docs.santiu.workers.dev`, preserving the existing upload secret and KV.
+- Created D1 `docs-reviews`, ID `d969f891-02a1-4ca9-bc9a-08c2fb447f11`.
+  Applied both remote migrations; migration list reports no pending migrations.
+- Updated the clean uploads checkout to merged `main`. The existing `publish-doc`
+  symlink now supports review publishing, feedback retrieval, and owner controls.
+  All four agent homes use the merged Fleet HTML skill.
+- Public demo: https://docs.santiu.workers.dev/d6afc61078115d5797568b
+- iPhone 17 Pro simulator Safari posted a circle over the image via public HTTPS.
+  `publish-doc --comments` returned its body, ellipse, and 402×566 viewport.
+  Desktop Chromium replayed that circle against the saved revision.
+- Owner close/open and resolve/reopen commands succeeded. A guest POST while
+  closed returned 403. The demo and its test thread remain open.
+- Plain publishing returned source-identical HTML. Revoking that temporary fixture
+  returned 404; its local source remains available. An existing public document
+  returned 200 with the same SHA256 before and after deployment.
+- The deployed client script matches local source byte-for-byte, SHA256
+  `12a4dcedf2a1e2f67d322eaeda32e0d7dfd9491cbeda0e16242c83144d96efeb`.
+- Fixed the observed singular label to read `1 visual mark`.
+  Reran local tests: 14 passed, 0 failed. Typecheck exited 0.
+- Previous Worker version for rollback: `86825987-2e0b-4504-b921-c83d79d224b9`.
+  No rollback performed. Physical-phone verification remains pending.
 
 ## Automated checks
 
@@ -80,7 +105,6 @@ D1 after accidental input. Comment body and anchor evidence were preserved.
 - Physical-phone access over the public HTTPS URL after deployment.
 - Exhaustive touch selection-handle, keyboard, orientation, and assistive-technology
   coverage. The focused-field keyboard adjustment needs broader device testing.
-- D1 provisioning, remote migration, production deployment, and CLI/skill activation.
 - Legacy HTML compatibility review for the new sandbox, especially external scripts
   or network requests outside Fleet's existing artifact rules.
 
