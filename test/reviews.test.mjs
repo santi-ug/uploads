@@ -145,3 +145,34 @@ test('review viewer isolates authored HTML and leaves the stored HTML intact', a
   await fetch(base + '/' + plain, { method: 'PUT', headers: owner, body: fixture });
   assert.equal(await (await call('/' + plain)).text(), fixture);
 });
+
+test('Save queues once, requires a connected owner relay, and acknowledges only that document', async () => {
+  const { slug, revision } = await document(), root = comment(revision), relayId = randomUUID(), id = randomUUID();
+  const path = '/' + slug;
+  await call(path + '/comments', 'POST', root, guest);
+  assert.equal((await call(path + '/dispatch', 'POST', { id }, guest)).status, 503);
+  assert.equal((await call(path + '/agent', 'POST', { relayId }, guest)).status, 401);
+  assert.equal((await call(path + '/agent', 'POST', { relayId }, owner)).status, 200);
+  assert.equal((await call(path + '/agent', 'POST', { relayId: randomUUID() }, owner)).status, 409);
+  assert.equal((await call(path + '/dispatch', 'POST', { id })).status, 403);
+  const results = await Promise.all([id, randomUUID()].map(id => call(path + '/dispatch', 'POST', { id }, guest).then(r => r.json())));
+  assert.equal(results.filter(result => result.delivery).length, 1, 'only the click that captures feedback reports a new delivery');
+  const jobId = results.find(result => result.delivery).delivery.id;
+  const pending = await (await call(path + '/agent', 'POST', { relayId }, owner)).json();
+  assert.equal(pending.delivery.comments.length, 1); assert.equal(pending.delivery.comments[0].id, root.id);
+  assert.equal((await call(path + '/agent/' + jobId, 'POST', { relayId: randomUUID() }, owner)).status, 409);
+  assert.equal((await call(path + '/agent/' + jobId, 'POST', { relayId }, guest)).status, 401);
+  assert.equal((await call(path + '/agent/' + jobId, 'POST', { relayId }, owner)).status, 200);
+  const saved = await (await call(path + '/dispatch', 'POST', { id: randomUUID() }, guest)).json();
+  assert.equal(saved.delivery, null, 'a no-op Save must not report an older delivery as new');
+  assert.equal((await (await call(path + '/dispatch')).json()).delivery.id, jobId, 'GET still reports the latest delivery for status polling');
+  assert.equal((await (await call(path + '/agent', 'POST', { relayId }, owner)).json()).delivery, null);
+  const reply = comment(revision, { parentId: root.id, body: 'One more change.' });
+  await call(path + '/comments', 'POST', reply, guest);
+  await call(path + '/dispatch', 'POST', { id: randomUUID() }, guest);
+  const next = await (await call(path + '/agent', 'POST', { relayId }, owner)).json();
+  assert.deepEqual(next.delivery.comments.map(c => c.id), [reply.id]);
+  await call(path + '/review', 'POST', { action: 'close' }, owner);
+  assert.equal((await call(path + '/dispatch', 'POST', { id: randomUUID() }, guest)).status, 403);
+  assert.equal((await call(path + '/agent', 'POST', { relayId }, owner)).status, 403);
+});

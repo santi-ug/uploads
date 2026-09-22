@@ -5,6 +5,7 @@
 #   publish-doc --unpublish ~/writeups/x.html  revoke the link
 #   publish-doc --list                       show every published doc
 #   publish-doc --review <file.html>         publish with hosted comments
+#   publish-doc --connect-agent <file.html> <t3|codex|claude>:<session-id>  watch Save for four hours
 #   publish-doc --comments <file.html>       retrieve feedback as JSON
 #   publish-doc --close-review <file.html>   disable new comments
 #   publish-doc --open-review <file.html>    reopen for 30 days
@@ -73,6 +74,15 @@ review=false
 if [ "${1:-}" = '--review' ]; then review=true; shift; fi
 
 case "${1:---help}" in
+--connect-agent)
+	file="${2:?usage: publish-doc --connect-agent <file.html> <t3|codex|claude>:<session-id>}"
+	thread_id="${3:?an exact agent session ID is required}"
+	slug="$(existing_slug "$file")"
+	[ -n "$slug" ] || die "$file was never published"
+	script_path="$(node -p 'require("node:fs").realpathSync(process.argv[1])' "$0")"
+	DOCS_UPLOAD_TOKEN="$(token)" node "$(dirname "$script_path")/connect-review-agent.mjs" "$BASE_URL/$slug" "$thread_id"
+	exit
+	;;
 --comments | --close-review | --open-review | --resolve | --reopen-thread)
 	command="$1"
 	file="${2:?usage: publish-doc <operation> <file.html>}"

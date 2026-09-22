@@ -137,3 +137,9 @@ See [pinned comment decision](pinned-comments-design.md). Drawing focuses the do
 for the marks just drawn.
 
 [Before](review-page-images/before.png) · [After](review-page-images/after.png)
+
+## Save and automatic agent pickup
+
+Post stores a comment. Save sends unsubmitted feedback to the connected agent and
+shows delivery status. The owner must connect the review to the current agent session;
+see [Save-to-agent delivery](review-agent-delivery.md) for setup, expiry, and rollout.

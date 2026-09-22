@@ -19,6 +19,7 @@
   let data = { revision: '', open: false, comments: [] };
   let frameRevision = '', busy = false, loading = false, tool = 'read', viewing = null, loadingSnapshot = false;
   let notifiedCount = 0;
+  let saving = false, saveRequestId = newRequestId(), deliveryId = null, toastTimer;
   let markup = null;
   const popover = byId('compose-popover'), threadPopover = byId('thread-popover');
   let selectedId = null, threadPosition = null, threadContentKey = '', threadListKey = '', threadReturnFocus = null;
@@ -139,9 +140,7 @@
     head.append(dot, element('span', commenter + ' · ' + when + suffix, 'meta'));
     return head;
   }
-  // A native notification when the open count grows, so feedback surfaces without
-  // requiring a chat message back to whoever is waiting on it. Same-origin, no new
-  // server capability: the comment count was already public and already fetched.
+  // Browser notifications report incoming comments; agent delivery is handled by Save.
   function notify(openCount) {
     if (typeof Notification === 'undefined' || openCount <= notifiedCount) { notifiedCount = openCount; return; }
     if (Notification.permission === 'default') Notification.requestPermission();
@@ -150,6 +149,7 @@
   }
   function render() {
     name.disabled = busy; body.disabled = busy;
+    byId('save').disabled = busy || saving;
     byId('review-state').textContent = data.open ? '' : 'Review closed';
     byId('post').disabled = busy || !data.open || !frameRevision || Boolean(viewing) || (!parentId && Boolean(draftRevision) && draftRevision !== frameRevision);
     for (const button of document.querySelectorAll('[data-tool]:not([data-tool="read"]):not([data-tool="undo"]):not([data-tool="redo"])')) button.disabled = !data.open || Boolean(viewing) || busy;
@@ -281,7 +281,46 @@
   byId('new').addEventListener('click', () => selectTarget({ quote: '', selector: '' }, null, undefined, null));
   byId('clear-target').addEventListener('click', () => { if (confirm('Remove the selected target and marks? Your comment text stays.')) { clearMarks(); anchor = { quote: '', selector: '' }; parentId = null; draftRevision = frameRevision; targetLabel(); saveDraft(); render(); } });
   byId('refresh').addEventListener('click', refresh);
-  byId('save').addEventListener('click', () => void refresh());
+  function toast(text, persistent = false) {
+    clearTimeout(toastTimer);
+    const node = byId('save-notice'); node.textContent = text; node.hidden = false;
+    if (!persistent) toastTimer = setTimeout(() => { node.hidden = true; }, 6000);
+  }
+  function showDelivery(result) {
+    if (!result.delivery) {
+      toast(deliveryId ? 'Saved. Earlier feedback is still queued.' : 'No new feedback to send.', Boolean(deliveryId));
+      return;
+    }
+    deliveryId = result.delivery?.status === 'queued' ? result.delivery.id : null;
+    if (deliveryId) toast(result.connected ? 'Saved. Queued for your agent.' : 'Saved. Waiting for the agent to reconnect.', true);
+    else toast(result.delivery ? 'Sent to your agent.' : 'No new feedback to send.');
+  }
+  async function saveReview() {
+    if (saving || busy) return;
+    saving = true; render(); toast('Saving…', true);
+    try {
+      if (body.value.trim() || markup) {
+        if (!name.value.trim() || !body.value.trim()) {
+          openComposer(); status.textContent = 'Add your name and describe the change before saving.';
+          toast('Describe the change before saving.'); return;
+        }
+        if (!await postComment()) { toast('Not sent. Check your comment and try again.', true); return; }
+      }
+      const response = await fetch('/' + slug + '/dispatch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: saveRequestId }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Could not send feedback. Try Save again.');
+      saveRequestId = newRequestId(); showDelivery(result);
+    } catch (error) { toast(error.message, true); }
+    finally { saving = false; render(); }
+  }
+  byId('save').addEventListener('click', saveReview);
+  setInterval(async () => {
+    if (!deliveryId || document.hidden) return;
+    try {
+      const response = await fetch('/' + slug + '/dispatch');
+      if (response.ok) showDelivery(await response.json());
+    } catch { toast('Saved. Waiting for the connection to return.', true); }
+  }, 2000);
   byId('resolved').addEventListener('change', render);
   form.addEventListener('input', () => { requestId = newRequestId(); saveDraft(); });
   addEventListener('keydown', event => { if (event.key === 'Escape') { closeThread(); setTool('read'); if (!popover.hidden) closeComposer(); else if (!panel.hidden) closePanel(); } if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !popover.hidden) { event.preventDefault(); form.requestSubmit(); } });
@@ -324,8 +363,9 @@
     if (message.type === 'review-notice' && typeof message.text === 'string') byId('instruction').textContent = message.text.slice(0, 200);
     if (message.type === 'review-escape') { closeThread(); setTool('read'); if (!popover.hidden) closeComposer(); else if (!panel.hidden) closePanel(); }
   });
-  form.addEventListener('submit', async event => {
-    event.preventDefault(); if (busy || !data.open || viewing || (!parentId && (data.revision !== frameRevision || draftRevision !== frameRevision))) return;
+  form.addEventListener('submit', event => { event.preventDefault(); void postComment(); });
+  async function postComment() {
+    if (busy || !data.open || viewing || (!parentId && (data.revision !== frameRevision || draftRevision !== frameRevision))) return false;
     busy = true; setTool('read'); render(); status.textContent = 'Posting…'; saveDraft();
     try {
       const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: requestId, name: name.value, body: body.value, revision: frameRevision, ...anchor, markup, parentId }) });
@@ -333,10 +373,10 @@
       if (!response.ok) throw new Error(result.error || 'Could not post.');
       body.value = ''; clearMarks(); anchor = { quote: '', selector: '' }; parentId = null; requestId = newRequestId(); saveDraft(); status.textContent = 'Posted.';
       closeComposer(); byId('instruction').textContent = 'Comment saved.';
-      await refresh();
-    } catch (error) { status.textContent = 'Not sent. ' + error.message; }
+      await refresh(); return true;
+    } catch (error) { status.textContent = 'Not sent. ' + error.message; return false; }
     finally { busy = false; setTool('read'); render(); byId('post').textContent = body.value ? 'Retry' : 'Post'; }
-  });
+  }
   async function viewMarkup(comment) {
     if (loadingSnapshot || busy) return;
     const next = safeMarkup(comment.markup);
