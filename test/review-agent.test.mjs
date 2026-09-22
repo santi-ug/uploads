@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { tick, deliveryCommand, feedbackMessage } from '../scripts/review-agent.mjs';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { tick, deliveryCommand, feedbackMessage, startCodexTurn } from '../scripts/review-agent.mjs';
 const config = { reviewUrl: 'http://localhost:8787/doc', t3Origin: 'http://localhost:3773', threadId: 'thread', relayId: 'relay', t3Token: 'private', uploadToken: 'owner' };
 const delivery = { id: 'batch', created_at: 1000, comments: [{ body: 'Shorten this paragraph.' }] };
 const thread = () => ({ id: 'thread', messages: [], session: { status: 'ready' }, latestTurn: { state: 'completed' }, runtimeMode: 'approval-required', interactionMode: 'default' });
@@ -104,4 +106,17 @@ test('Claude rejects and stops a copied session instead of claiming delivery', a
     assert.deepEqual(calls.filter(Array.isArray).at(-1), ['stop', 'deadbeef']);
     assert.equal(calls.includes(cli.reviewUrl + '/agent/batch'), false);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('Codex rejects a resume that starts a different thread', async () => {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough(); child.stderr = new PassThrough();
+  let killed = false;
+  child.kill = () => { killed = true; setImmediate(() => child.emit('exit', 0)); };
+  const launch = () => {
+    setImmediate(() => child.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'other-session' }) + '\n'));
+    return child;
+  };
+  await assert.rejects(startCodexTurn({ sessionId: 'exact-session', sessionCwd: '/project' }, 'feedback', launch), /different session/);
+  assert.equal(killed, true);
 });

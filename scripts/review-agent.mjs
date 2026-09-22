@@ -60,8 +60,8 @@ export async function cliDeliveryState(config, run = runFile) {
   throw new Error('Unsupported Claude session state: ' + session.state);
 }
 /** A queued Codex message alone does not wake an idle session. Resume it and wait for turn.started. */
-export async function startCodexTurn(config, message) {
-  const child = spawn('codex', ['exec', 'resume', '--json', config.sessionId, message], {
+export async function startCodexTurn(config, message, launch = spawn) {
+  const child = launch('codex', ['exec', 'resume', '--json', config.sessionId, message], {
     cwd: config.sessionCwd, stdio: ['ignore', 'pipe', 'pipe'],
   });
   activeCodexProcess = child;
@@ -87,7 +87,14 @@ export async function startCodexTurn(config, message) {
     child.once('error', error => finish(error));
     child.once('exit', code => finish(new Error('Codex exited before starting the review turn (status ' + code + '). ' + errors)));
     lines.on('line', line => {
-      try { if (JSON.parse(line).type === 'turn.started') finish(); }
+      try {
+        const event = JSON.parse(line);
+        if (event.type === 'thread.started' && event.thread_id !== config.sessionId) {
+          child.kill('SIGTERM');
+          finish(new Error('Codex resumed a different session.'));
+        }
+        if (event.type === 'turn.started') finish();
+      }
       catch { /* Ignore non-event output from the CLI. */ }
     });
   });
