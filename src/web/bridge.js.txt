@@ -6,9 +6,13 @@
   style.textContent = ':host{color-scheme:light dark}svg{position:absolute;inset:0;width:100%;height:100%;overflow:hidden}button{position:absolute;pointer-events:auto;min-height:44px;padding:8px 14px;border:0;border-radius:8px;background:#171717;color:white;font:14px system-ui;box-shadow:0 0 0 1px #fff5,0 4px 18px #0003;cursor:pointer}button:focus-visible{outline:3px solid #85adff;outline-offset:3px}[hidden]{display:none!important}@media(prefers-color-scheme:dark){button{background:white;color:black}}';
   const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg'); svg.setAttribute('aria-hidden', 'true');
   const action = document.createElement('button'); action.textContent = 'Comment'; action.hidden = true;
-  shadow.append(style, svg, action); document.documentElement.append(host);
+  const savedSvg = document.createElementNS(ns, 'svg'); savedSvg.setAttribute('aria-hidden', 'true');
+  const pins = document.createElement('div');
+  style.textContent += '.pin{width:28px;height:28px;min-height:28px;padding:0;border:2px solid white;border-radius:50% 50% 50% 4px;background:var(--pin-color);color:white;font:600 10px system-ui;box-shadow:0 1px 4px #0004}.pin[aria-expanded=true]{outline:2px solid #2563eb;outline-offset:2px}.pin:active{transform:scale(.95)}@media(pointer:coarse){.pin:before{content:"";position:absolute;inset:-8px}}';
+  shadow.append(style, savedSvg, svg, pins, action); document.documentElement.append(host);
   let tool = 'read', allowed = false, replay = false, marks = [], undo = [], redo = [], viewport = null;
-  let shortcuts = [];
+  let shortcuts = [], threads = [], selectedThread = null, threadKey = '';
+  const pinNodes = new Map();
   let highlighted = null;
   let active = null, pending = null, quote = '', selector = '', frame = 0, timer;
   const clean = value => (value || '').replace(/\s+/g, ' ').trim().slice(0, 1000);
@@ -43,21 +47,66 @@
     remember(); if (anchor) ({ quote, selector } = anchor);
     viewport ||= { width: innerWidth, height: innerHeight }; marks = [...marks, ...next]; changed(); return true;
   }
+  function drawMark(mark, layer, opacity) {
+    let node;
+    if (mark.kind === 'stroke') {
+      node = document.createElementNS(ns, 'polyline'); node.setAttribute('points', mark.points.map(p => `${p.x - scrollX},${p.y - scrollY}`).join(' '));
+    } else {
+      node = document.createElementNS(ns, mark.kind === 'ellipse' ? 'ellipse' : 'rect');
+      const attributes = mark.kind === 'ellipse' ? { cx: mark.x - scrollX + mark.width / 2, cy: mark.y - scrollY + mark.height / 2, rx: mark.width / 2, ry: mark.height / 2 } : { x: mark.x - scrollX, y: mark.y - scrollY, width: mark.width, height: mark.height };
+      for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+    }
+    node.setAttribute('fill', 'none'); node.setAttribute('stroke', '#2563eb'); node.setAttribute('stroke-width', '3'); node.setAttribute('stroke-linecap', 'round'); node.setAttribute('stroke-linejoin', 'round'); node.setAttribute('opacity', opacity); layer.append(node);
+  }
+  // Saved annotations are independent of the editable draft and its undo history.
+  function threadGeometry(thread) {
+    const source = thread.markup?.marks || [];
+    const scale = thread.markup ? innerWidth / thread.markup.viewport.width : 1;
+    let mapped = source.map(mark => mark.kind === 'stroke'
+      ? { ...mark, points: mark.points.map(p => ({ x: p.x * scale, y: p.y * scale })) }
+      : { ...mark, x: mark.x * scale, y: mark.y * scale, width: mark.width * scale, height: mark.height * scale });
+    let target = null;
+    if (thread.selector) {
+      try {
+        const node = document.querySelector(thread.selector);
+        if (node && clean(node.textContent).includes(clean(thread.quote))) target = rect(node.getBoundingClientRect());
+      } catch { /* A missing anchor falls back to saved geometry. */ }
+    }
+    if (target && mapped.length && scale !== 1) {
+      const first = bounds(mapped[0]), dx = target.x - first.x, dy = target.y - first.y;
+      mapped = mapped.map(mark => mark.kind === 'stroke'
+        ? { ...mark, points: mark.points.map(p => ({ x: p.x + dx, y: p.y + dy })) }
+        : { ...mark, x: mark.x + dx, y: mark.y + dy });
+    }
+    const first = mapped.length ? bounds(mapped[0]) : target;
+    return { marks: mapped, anchor: first ? { x: Math.max(0, first.x + first.width - 14), y: Math.max(0, first.y - 14) } : null };
+  }
+  function focusThread(id) {
+    const thread = threads.find(item => item.id === id);
+    if (!thread) return;
+    selectedThread = id;
+    const geometry = threadGeometry(thread);
+    if (geometry.anchor) scrollTo({ top: Math.max(0, geometry.anchor.y - 120), left: Math.max(0, geometry.anchor.x - innerWidth + 100), behavior: 'instant' });
+    paint();
+  }
   function paint() {
     if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0; svg.replaceChildren();
-      for (const mark of [...marks, ...(highlighted ? [highlighted] : []), ...(active ? [active.mark] : [])]) {
-        let node;
-        if (mark.kind === 'stroke') {
-          node = document.createElementNS(ns, 'polyline'); node.setAttribute('points', mark.points.map(p => `${p.x - scrollX},${p.y - scrollY}`).join(' '));
-        } else {
-          node = document.createElementNS(ns, mark.kind === 'ellipse' ? 'ellipse' : 'rect');
-          const attributes = mark.kind === 'ellipse' ? { cx: mark.x - scrollX + mark.width / 2, cy: mark.y - scrollY + mark.height / 2, rx: mark.width / 2, ry: mark.height / 2 } : { x: mark.x - scrollX, y: mark.y - scrollY, width: mark.width, height: mark.height };
-          for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+      savedSvg.replaceChildren();
+      for (const thread of threads) {
+        const geometry = threadGeometry(thread);
+        for (const mark of geometry.marks) drawMark(mark, savedSvg, thread.id === selectedThread ? '1' : '.5');
+        const pin = pinNodes.get(thread.id);
+        pin.hidden = !geometry.anchor;
+        pin.setAttribute('aria-expanded', String(thread.id === selectedThread));
+        if (geometry.anchor) {
+          const x = geometry.anchor.x - scrollX, y = geometry.anchor.y - scrollY;
+          pin.style.left = x + 'px'; pin.style.top = y + 'px';
+          if (thread.id === selectedThread) send({ type: 'review-thread-position', id: thread.id, position: { x: x + 36, y } });
         }
-        node.setAttribute('fill', 'none'); node.setAttribute('stroke', '#2563eb'); node.setAttribute('stroke-width', '3'); node.setAttribute('stroke-linecap', 'round'); node.setAttribute('stroke-linejoin', 'round'); svg.append(node);
       }
+      for (const mark of [...marks, ...(highlighted ? [highlighted] : []), ...(active ? [active.mark] : [])]) drawMark(mark, svg, '1');
       action.hidden = replay || !allowed || active !== null || (!marks.length && !pending);
       if (!action.hidden) {
         const b = pending?.rect || bounds(marks[marks.length - 1]);
@@ -76,6 +125,22 @@
   addEventListener('message', event => {
     if (event.source !== parent || !event.data || typeof event.data !== 'object') return;
     const message = event.data;
+    if (message.type === 'review-threads' && message.revision === reviewRevision && Array.isArray(message.threads)) {
+      const key = JSON.stringify(message.threads);
+      if (key !== threadKey) {
+        threadKey = key; threads = message.threads; pins.replaceChildren(); pinNodes.clear();
+        for (const thread of threads) {
+          const pin = document.createElement('button'); pin.className = 'pin';
+          pin.textContent = thread.initial; pin.style.setProperty('--pin-color', thread.color);
+          pin.setAttribute('aria-label', 'Comment by ' + thread.name + ': ' + thread.body);
+          pin.addEventListener('pointerdown', event => event.stopPropagation());
+          pin.addEventListener('click', () => { focusThread(thread.id); send({ type: 'review-open-thread', id: thread.id }); });
+          pinNodes.set(thread.id, pin); pins.append(pin);
+        }
+      }
+      selectedThread = message.selectedId; paint();
+    }
+    if (message.type === 'review-focus-thread' && message.revision === reviewRevision) focusThread(message.id);
     if (message.type === 'review-ping') ready();
     if (message.type === 'review-tool') { allowed = message.allowed === true; shortcuts = Array.isArray(message.shortcuts) ? message.shortcuts.filter(key => typeof key === 'string') : []; setTool(message.tool); }
     if (message.type === 'review-history' && !replay) {
@@ -95,6 +160,10 @@
   });
   const ownControl = event => {
     if (event.composedPath().includes(action)) return true;
+    for (const pin of pinNodes.values()) {
+      const r = pin.getBoundingClientRect();
+      if (!pin.hidden && event.clientX >= r.left - 8 && event.clientX <= r.right + 8 && event.clientY >= r.top - 8 && event.clientY <= r.bottom + 8) return true;
+    }
     // Closed-shadow events are retargeted to the host at document capture time.
     const r = action.getBoundingClientRect();
     return !action.hidden && event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
@@ -152,7 +221,7 @@
     if (event.key === 'Escape') send({ type: 'review-escape' });
     // Same visibility condition paint() uses for the floating Comment button
     // (that value updates on the next animation frame, so it lags a fresh mark).
-    if (event.key === 'Enter' && !event.repeat && allowed && !replay && active === null && (marks.length || pending)) {
+    if (event.key === 'Enter' && ![...pinNodes.values()].includes(shadow.activeElement) && !event.repeat && allowed && !replay && active === null && (marks.length || pending)) {
       const editable = event.composedPath().some(node => node.isContentEditable || node.matches?.('input,textarea,select,[role="textbox"],[role="combobox"]'));
       if (!editable) { event.preventDefault(); openComment(); }
     }

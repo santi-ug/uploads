@@ -53,8 +53,9 @@ defines when to retrieve it and when to wait for further feedback.
 - Each comment stores its document slug, HTML SHA-256 revision, quote, CSS locator,
   display name, text, timestamp, optional root thread ID, and optional markup geometry.
 - A new thread requires the current revision. Replies inherit the root's anchor.
-  Earlier revisions retain their quote and an Earlier version label. View markup
-  opens the saved HTML at the original viewport, with a Back to current control.
+  Earlier revisions retain their quote and an Earlier version label. Opening a
+  thread stays on the document; View original version explicitly opens saved HTML
+  at the original viewport, with a Back to current control.
   Owner publications archive reviewed HTML for 90 days from first capture. Revoking
   the link blocks snapshots too. Expired snapshots leave the comment and geometry
   readable, with an explicit unavailable message.
@@ -124,8 +125,15 @@ document KV values are never rewritten by viewing or reviewing.
 ## Review controls
 
 The title, header actions, and annotation toolbar use translucent glass surfaces
-above the document. Desktop comments stay visible, with name-based avatars and a
-primary New comment action. Drawing focuses the document so Enter opens the editor
+above the document. Desktop comments stay visible in a 200px sidebar with 10px text and compact rows.
+Initial-letter pins locate anchored comments in the document. Clicking a row or pin
+scrolls to the annotation and opens a nearby thread; other drawings remain visible.
+On mobile, the list and selected thread use separate sheets. Close or Escape
+dismisses the thread. Reply actions appear only inside the open thread.
+
+Coordinate-only drawings adapt proportionally to the current width, so responsive
+reflow can move their content. Original layout opens their saved viewport explicitly.
+See [pinned comment decision](pinned-comments-design.md). Drawing focuses the document so Enter opens the editor
 for the marks just drawn.
 
 [Before](review-page-images/before.png) · [After](review-page-images/after.png)

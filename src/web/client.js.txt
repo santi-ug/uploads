@@ -20,7 +20,8 @@
   let frameRevision = '', busy = false, loading = false, tool = 'read', viewing = null, loadingSnapshot = false;
   let notifiedCount = 0;
   let markup = null;
-  const popover = byId('compose-popover');
+  const popover = byId('compose-popover'), threadPopover = byId('thread-popover');
+  let selectedId = null, threadPosition = null, threadContentKey = '', threadListKey = '', threadReturnFocus = null;
   let anchor = { quote: '', selector: '' }, parentId = null, requestId = newRequestId();
   let returnFocus = byId('show');
   function saveDraft() {
@@ -48,6 +49,7 @@
     }
   } catch { /* A missing or invalid draft never prevents reading. */ }
   function openPanel(focus = false) {
+    closeThread(false);
     if (!popover.hidden) closeComposer();
     if (panel.hidden) {
       const active = document.activeElement;
@@ -97,6 +99,7 @@
   }
   function closeComposer() { popover.hidden = true; saveDraft(); returnFocus.focus(); }
   function openComposer(position) {
+    closeThread(false);
     popover.hidden = false; byId('draft').hidden = true;
     const r = frame.getBoundingClientRect();
     popover.style.left = Math.max(12, Math.min(innerWidth - 372, r.left + (position?.x || 24))) + 'px';
@@ -131,7 +134,7 @@
   }
   function commentHead(commenter, when, suffix) {
     const head = element('div', '', 'comment-head');
-    const dot = element('span', (commenter.trim()[0] || '?').toUpperCase(), 'avatar');
+    const dot = element('span', ([...commenter.trim()][0] || '?').toUpperCase(), 'avatar');
     dot.style.background = avatarColor(commenter);
     head.append(dot, element('span', commenter + ' · ' + when + suffix, 'meta'));
     return head;
@@ -147,7 +150,7 @@
   }
   function render() {
     name.disabled = busy; body.disabled = busy;
-    byId('review-state').textContent = data.open ? 'Review open · comments are saved online.' : 'Review closed · the document and comments remain readable.';
+    byId('review-state').textContent = data.open ? '' : 'Review closed';
     byId('post').disabled = busy || !data.open || !frameRevision || Boolean(viewing) || (!parentId && Boolean(draftRevision) && draftRevision !== frameRevision);
     for (const button of document.querySelectorAll('[data-tool]:not([data-tool="read"]):not([data-tool="undo"]):not([data-tool="redo"])')) button.disabled = !data.open || Boolean(viewing) || busy;
     byId('new').disabled = !data.open || Boolean(viewing) || busy;
@@ -157,27 +160,26 @@
     const openCount = roots.filter(comment => comment.status === 'open').length;
     byId('count').textContent = openCount;
     notify(openCount);
-    const list = byId('threads'); list.replaceChildren();
-    for (const comment of roots.filter(comment => byId('resolved').checked || comment.status === 'open')) {
-      const article = document.createElement('article');
-      article.append(commentHead(comment.name, new Date(comment.created_at).toLocaleString(), comment.status === 'resolved' ? ' · Resolved' : ''));
-      if (comment.quote) article.append(element('blockquote', comment.quote));
-      if (comment.revision !== frameRevision) article.append(element('p', 'Earlier version', 'hint'));
-      article.append(element('p', comment.body, 'comment-body'));
-      for (const reply of data.comments.filter(item => item.parent_id === comment.id)) {
-        const row = element('div', '', 'reply');
-        row.append(commentHead(reply.name, new Date(reply.created_at).toLocaleString(), ''), element('p', reply.body, 'comment-body')); article.append(row);
+    const list = byId('threads');
+    const visible = roots.filter(comment => byId('resolved').checked || comment.status === 'open');
+    const listKey = JSON.stringify([visible, data.comments.filter(comment => comment.parent_id !== null), frameRevision]);
+    if (listKey !== threadListKey) {
+      threadListKey = listKey; list.replaceChildren();
+      for (const comment of visible) {
+        const row = button('', () => openThread(comment.id)); row.className = 'thread-row'; row.dataset.thread = comment.id;
+        row.setAttribute('aria-expanded', String(selectedId === comment.id)); row.setAttribute('aria-controls', 'thread-popover');
+        row.append(commentHead(comment.name, new Date(comment.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), ''));
+        row.append(element('span', comment.body, 'thread-excerpt'));
+        const replies = data.comments.filter(item => item.parent_id === comment.id).length;
+        const notes = [comment.revision !== frameRevision ? 'Earlier version' : '', comment.status === 'resolved' ? 'Resolved' : '', replies ? replies + (replies === 1 ? ' reply' : ' replies') : ''].filter(Boolean);
+        if (notes.length) row.append(element('span', notes.join(' · '), 'meta'));
+        list.append(row);
       }
-      const actions = element('div', '', 'thread-actions');
-      if (data.open && !viewing) actions.append(button('Reply', () => selectTarget({ quote: comment.quote, selector: comment.selector }, comment.id, undefined, null)));
-      if (comment.markup) actions.append(button('View markup', () => viewMarkup(comment)));
-      else if (comment.selector && comment.revision === frameRevision) actions.append(button('Show in document', () => {
-        frame.contentWindow?.postMessage({ type: 'review-reveal', ...comment }, '*');
-        if (matchMedia('(max-width:760px)').matches) closePanel();
-      }));
-      article.append(actions); list.append(article);
+      if (!list.childElementCount) list.append(element('p', 'No comments yet.', 'hint'));
     }
-    if (!list.childElementCount) list.append(element('p', 'No open comments. Start a thread or select something in the document.', 'hint'));
+    if (selectedId && !visible.some(comment => comment.id === selectedId)) closeThread();
+    syncThreads(visible);
+    renderThread();
     if (data.revision && frameRevision && data.revision !== frameRevision) {
       byId('review-state').textContent = 'A newer document version is available. Your draft is kept.';
       if (!byId('reload')) {
@@ -186,6 +188,69 @@
       byId('post').disabled = true;
     }
   }
+  function syncThreads(roots = data.comments.filter(comment => comment.parent_id === null && (byId('resolved').checked || comment.status === 'open'))) {
+    tell({ type: 'review-threads', revision: frameRevision, selectedId, threads: roots.filter(comment => comment.revision === frameRevision).map(comment => ({
+      id: comment.id, name: comment.name, body: comment.body, quote: comment.quote, selector: comment.selector,
+      initial: [...comment.name.trim()][0]?.toUpperCase() || '?', color: avatarColor(comment.name), markup: safeMarkup(comment.markup),
+    })) });
+  }
+  function placeThread(position = threadPosition) {
+    threadPosition = position;
+    const r = frame.getBoundingClientRect(), width = threadPopover.offsetWidth || 240;
+    const right = Math.min(innerWidth, r.right || innerWidth) - width - 12;
+    const beside = r.left + (position?.x ?? 24);
+    const left = beside > right ? beside - width - 48 : beside;
+    threadPopover.style.left = Math.max(12, Math.min(right, left)) + 'px';
+    threadPopover.style.top = Math.max(64, Math.min(innerHeight - threadPopover.offsetHeight - 100, r.top + (position?.y ?? 80))) + 'px';
+  }
+  function closeThread(restoreFocus = true) {
+    if (!selectedId && threadPopover.hidden) return;
+    selectedId = null; threadPopover.hidden = true; threadPosition = null;
+    for (const row of document.querySelectorAll('[data-thread]')) row.setAttribute('aria-expanded', 'false');
+    syncThreads();
+    if (restoreFocus) threadReturnFocus?.focus({ preventScroll: true });
+  }
+  function openThread(id) {
+    const comment = data.comments.find(item => item.id === id && item.parent_id === null);
+    if (!comment || busy) return;
+    if (!popover.hidden) closeComposer();
+    threadReturnFocus = document.activeElement;
+    selectedId = id; threadPosition = null; setTool('read');
+    if (matchMedia('(max-width:760px)').matches) closePanel();
+    for (const row of document.querySelectorAll('[data-thread]')) row.setAttribute('aria-expanded', String(row.dataset.thread === id));
+    renderThread(); threadPopover.hidden = false; placeThread(); syncThreads();
+    tell({ type: 'review-focus-thread', revision: frameRevision, id });
+    byId('thread-close').focus({ preventScroll: true });
+  }
+  function renderThread() {
+    const comment = data.comments.find(item => item.id === selectedId);
+    if (!comment) return;
+    const replies = data.comments.filter(item => item.parent_id === comment.id);
+    const key = JSON.stringify([comment, replies, data.open, frameRevision, Boolean(viewing)]);
+    if (key === threadContentKey) return;
+    threadContentKey = key;
+    const content = byId('thread-content'); content.replaceChildren();
+    for (const item of [comment, ...replies]) {
+      const row = element('div', '', 'thread-message');
+      row.append(commentHead(item.name, new Date(item.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), ''), element('p', item.body, 'comment-body'));
+      content.append(row);
+    }
+    if (comment.quote) content.append(element('blockquote', comment.quote));
+    const actions = byId('thread-actions'); actions.replaceChildren();
+    if (data.open && !viewing) actions.append(button('Reply', () => selectTarget({ quote: comment.quote, selector: comment.selector }, comment.id, threadPosition, null)));
+    if (comment.revision !== frameRevision) {
+      content.append(element('p', 'Earlier version', 'hint'));
+      actions.append(button('View original version', () => viewMarkup(comment)));
+    } else if (comment.markup && !viewing) {
+      const details = element('details', '', 'original-layout');
+      details.append(element('summary', 'Original layout'), button('View saved layout', () => viewMarkup(comment)));
+      actions.append(details);
+    }
+    placeThread();
+  }
+  byId('thread-close').addEventListener('click', () => closeThread());
+  addEventListener('resize', () => { if (!threadPopover.hidden) placeThread(); });
+  byId('stage').addEventListener('scroll', () => { if (!threadPopover.hidden) placeThread(); }, { passive: true });
   async function refresh() {
     if (loading) return; loading = true;
     try {
@@ -209,7 +274,7 @@
   for (const button of document.querySelectorAll('[data-tool]')) button.addEventListener('click', () => {
     returnFocus = button;
     if (['undo', 'redo'].includes(button.dataset.tool)) { tell({ type: 'review-history', action: button.dataset.tool }); return; }
-    if (!popover.hidden) closeComposer(); if (!panel.hidden) closePanel(); setTool(button.dataset.tool);
+    closeThread(false); if (!popover.hidden) closeComposer(); if (!panel.hidden) closePanel(); setTool(button.dataset.tool);
   });
   byId('cancel-compose').addEventListener('click', closeComposer);
   byId('draft').addEventListener('click', () => { targetLabel(); openComposer(); });
@@ -219,16 +284,18 @@
   byId('save').addEventListener('click', () => void refresh());
   byId('resolved').addEventListener('change', render);
   form.addEventListener('input', () => { requestId = newRequestId(); saveDraft(); });
-  addEventListener('keydown', event => { if (event.key === 'Escape') { setTool('read'); if (!popover.hidden) closeComposer(); else if (!panel.hidden) closePanel(); } if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !popover.hidden) { event.preventDefault(); form.requestSubmit(); } });
+  addEventListener('keydown', event => { if (event.key === 'Escape') { closeThread(); setTool('read'); if (!popover.hidden) closeComposer(); else if (!panel.hidden) closePanel(); } if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !popover.hidden) { event.preventDefault(); form.requestSubmit(); } });
   frame.addEventListener('load', () => frame.contentWindow?.postMessage({ type: 'review-ping' }, '*'));
   addEventListener('message', event => {
     if (event.source !== frame.contentWindow || !event.data || typeof event.data !== 'object') return;
     const message = event.data;
+    if (message.revision === frameRevision && message.type === 'review-open-thread' && typeof message.id === 'string') openThread(message.id);
+    if (message.revision === frameRevision && message.type === 'review-thread-position' && message.id === selectedId && message.position && Number.isFinite(message.position.x) && Number.isFinite(message.position.y)) placeThread(message.position);
     if (message.type === 'review-shortcut' && message.revision === frameRevision && typeof message.key === 'string') activateShortcut(message.key);
     if (message.type === 'review-ready' && typeof message.revision === 'string' && /^[a-f0-9]{64}$/.test(message.revision)) {
       frameRevision = message.revision;
       if (typeof message.title === 'string' && message.title.trim()) { byId('title').textContent = message.title.slice(0, 200); document.title = message.title.slice(0, 200) + ' · Review'; }
-      if (viewing) { if (message.revision !== viewing.revision) return; loadingSnapshot = false; tell({ type: 'review-restore', ...viewing, replay: true }); render(); return; }
+      if (viewing) { if (message.revision !== viewing.revision) return; loadingSnapshot = false; tell({ type: 'review-restore', ...viewing, markup: null, replay: true }); render(); tell({ type: 'review-focus-thread', revision: frameRevision, id: viewing.id }); return; }
       if (draftRevision && draftRevision !== frameRevision && (body.value.trim() || markup)) {
         status.textContent = 'Earlier-version draft kept. Clear its selection or choose a new target before posting.';
         sizeFrame(null); targetLabel(); setTool('read'); render(); return;
@@ -255,7 +322,7 @@
       selectTarget({ quote: message.quote.slice(0, 1000), selector: message.selector.slice(0, 500) }, null, message.position, next);
     }
     if (message.type === 'review-notice' && typeof message.text === 'string') byId('instruction').textContent = message.text.slice(0, 200);
-    if (message.type === 'review-escape') { setTool('read'); if (!popover.hidden) closeComposer(); else if (!panel.hidden) closePanel(); }
+    if (message.type === 'review-escape') { closeThread(); setTool('read'); if (!popover.hidden) closeComposer(); else if (!panel.hidden) closePanel(); }
   });
   form.addEventListener('submit', async event => {
     event.preventDefault(); if (busy || !data.open || viewing || (!parentId && (data.revision !== frameRevision || draftRevision !== frameRevision))) return;
@@ -272,8 +339,8 @@
   });
   async function viewMarkup(comment) {
     if (loadingSnapshot || busy) return;
-    const next = safeMarkup(comment.markup); if (!next) return;
-    saveDraft(); setTool('read'); popover.hidden = true; if (!panel.hidden) closePanel(); loadingSnapshot = true;
+    const next = safeMarkup(comment.markup);
+    saveDraft(); closeThread(false); setTool('read'); popover.hidden = true; if (!panel.hidden) closePanel(); loadingSnapshot = true;
     try {
       const response = await fetch('/' + slug + '/revision/' + comment.revision, { method: 'HEAD' });
       if (!response.ok) throw new Error('Saved document unavailable. The comment and geometry remain in the feedback JSON.');
@@ -281,7 +348,7 @@
       byId('draft').hidden = true; frameRevision = ''; frame.src = '/' + slug + '/revision/' + comment.revision; render();
     } catch (error) { byId('instruction').textContent = error.message; loadingSnapshot = false; }
   }
-  byId('current').addEventListener('click', () => { viewing = null; loadingSnapshot = false; sizeFrame(markup); byId('current').hidden = true; byId('snapshot-note').hidden = true; frameRevision = ''; frame.src = '/' + slug + '/content'; render(); });
+  byId('current').addEventListener('click', () => { closeThread(false); viewing = null; loadingSnapshot = false; sizeFrame(markup); byId('current').hidden = true; byId('snapshot-note').hidden = true; frameRevision = ''; frame.src = '/' + slug + '/content'; render(); });
   function keyboardLayout() {
     if (!visualViewport || !matchMedia('(max-width:760px)').matches) { panel.style.bottom = ''; panel.style.maxHeight = ''; popover.style.bottom = ''; popover.style.maxHeight = ''; return; }
     panel.style.bottom = Math.max(0, innerHeight - visualViewport.height - visualViewport.offsetTop) + 'px';

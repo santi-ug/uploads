@@ -7,19 +7,28 @@ import assert from 'node:assert/strict';
 function bridge() {
   const listeners = new Map(), messages = [];
   let focusCalls = 0;
-  const node = () => ({ style: {}, hidden: true, append() {}, replaceChildren() {}, setAttribute() {},
-    attachShadow: node, addEventListener() {}, setPointerCapture() {}, hasPointerCapture: () => false,
-    getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0 }) });
+  const animationFrames = [];
+  const node = (tag = 'div') => {
+    const handlers = new Map(), attributes = new Map();
+    return { tag, style: { setProperty(key, value) { this[key] = value; } }, hidden: true, children: [],
+      append(...children) { this.children.push(...children); }, replaceChildren(...children) { this.children = children; },
+      setAttribute: (key, value) => attributes.set(key, value), getAttribute: key => attributes.get(key),
+      attachShadow() { this.shadow = node(); return this.shadow; },
+      addEventListener: (type, fn) => handlers.set(type, fn), click() { handlers.get('click')?.(); },
+      setPointerCapture() {}, hasPointerCapture: () => false,
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0 }) };
+  };
+  const documentRoot = node(), scrolls = [];
   const on = (type, fn) => listeners.set(type, [...listeners.get(type) || [], fn]);
   const parent = { postMessage: value => messages.push(structuredClone(value)) };
   const paragraphs = ['First', 'Second'].map((textContent, i) => ({ textContent, localName: 'p', closest() { return this; },
     scrollIntoView() {}, getBoundingClientRect: () => ({ left: 10, top: 100 + i * 100, width: 100, height: 20 }) }));
   const page = { children: paragraphs }; paragraphs.forEach(p => { p.parentElement = page; });
   const context = { parent, reviewRevision: 'a'.repeat(64), innerWidth: 402, innerHeight: 566,
-    scrollX: 0, scrollY: 0, requestAnimationFrame: () => 1, setTimeout, clearTimeout, focus: () => { focusCalls++; },
-    addEventListener: on, document: { createElement: node, createElementNS: node,
+    scrollX: 0, scrollY: 0, requestAnimationFrame: fn => { animationFrames.push(fn); return animationFrames.length; }, scrollTo: value => scrolls.push(value), setTimeout, clearTimeout, focus: () => { focusCalls++; },
+    addEventListener: on, document: { createElement: node, createElementNS: (_ns, tag) => node(tag),
       body: page, elementsFromPoint: (_x, y) => [paragraphs[y >= 200 ? 1 : 0]], querySelector: () => paragraphs[0],
-      documentElement: node(), title: 'Fixture', addEventListener: on } };
+      documentElement: documentRoot, title: 'Fixture', addEventListener: on } };
   vm.runInNewContext(readFileSync(new URL('../src/web/shortcuts.js.txt', import.meta.url), 'utf8') + '\n' + readFileSync(new URL('../src/web/bridge.js.txt', import.meta.url), 'utf8'), context);
   const emit = (type, value) => listeners.get(type)?.forEach(fn => fn(value));
   const send = value => emit('message', { source: parent, data: value });
@@ -27,7 +36,10 @@ function bridge() {
     composedPath: () => [], preventDefault() {}, stopImmediatePropagation() {} });
   const tool = value => send({ type: 'review-tool', tool: value, allowed: true });
   const latest = () => messages.findLast(message => message.type === 'review-markup');
-  return { send, pointer, tool, latest, emit, messages, focusCalls: () => focusCalls };
+  const flush = () => { while (animationFrames.length) animationFrames.shift()(); };
+  const shadow = documentRoot.children[0].shadow;
+  return { send, pointer, tool, latest, emit, messages, focusCalls: () => focusCalls, flush, scrolls,
+    saved: shadow.children[1], draft: shadow.children[2], pins: shadow.children[3] };
 }
 
 test('drawing focuses the iframe so a following Enter reaches this document, not the parent', () => {
@@ -116,4 +128,43 @@ test('Enter is ignored while typing and when there is nothing pending', () => {
   const before = b.messages.length;
   b.emit('keydown', { key: 'Enter', composedPath: () => [{ matches: () => true }], preventDefault() {} });
   assert.equal(b.messages.slice(before).length, 0);
+});
+
+
+test('saved drawings and initial pins survive opening threads, drafting, undo, and clearing', () => {
+  const b = bridge(), revision = 'a'.repeat(64);
+  const threads = ['Santi', 'Ana'].map((name, index) => ({ id: String(index), name, body: 'A note', initial: name[0], color: '#555', selector: '', quote: '',
+    markup: { version: 1, viewport: { width: 402, height: 566 }, marks: [{ kind: 'rect', x: 20, y: 100 + index * 150, width: 80, height: 30 }] } }));
+  b.send({ type: 'review-threads', revision, threads, selectedId: null }); b.flush();
+  assert.equal(b.saved.children.length, 2);
+  assert.deepEqual(b.pins.children.map(pin => pin.textContent), ['S', 'A']);
+  const firstPin = b.pins.children[0]; firstPin.click(); b.flush();
+  assert.equal(b.saved.children.length, 2);
+  assert.equal(firstPin.getAttribute('aria-expanded'), 'true');
+  assert.equal(b.messages.findLast(m => m.type === 'review-open-thread').id, '0');
+  b.send({ type: 'review-focus-thread', revision, id: '1' }); b.flush();
+  assert.equal(b.saved.children.length, 2);
+  assert.equal(b.pins.children[1].getAttribute('aria-expanded'), 'true');
+  assert.equal(b.scrolls.at(-1).top, 116);
+  b.tool('rect'); b.pointer('pointerdown', 10, 10); b.pointer('pointermove', 50, 50); b.pointer('pointerup', 50, 50); b.flush();
+  assert.equal(b.draft.children.length, 1); assert.equal(b.saved.children.length, 2);
+  b.send({ type: 'review-history', action: 'undo' }); b.flush();
+  assert.equal(b.draft.children.length, 0); assert.equal(b.saved.children.length, 2);
+  b.send({ type: 'review-clear' }); b.flush();
+  assert.equal(b.saved.children.length, 2);
+  b.send({ type: 'review-threads', revision, threads, selectedId: null }); b.flush();
+  assert.equal(b.pins.children[0], firstPin, 'polling should preserve focusable pin nodes');
+  assert.equal(firstPin.getAttribute('aria-expanded'), 'false');
+  b.send({ type: 'review-threads', revision: 'b'.repeat(64), threads: [], selectedId: null }); b.flush();
+  assert.equal(b.saved.children.length, 2, 'other document revisions must not overwrite this layer');
+});
+
+test('saved layout keeps exact geometry even when its text anchor starts elsewhere', () => {
+  const b = bridge();
+  b.send({ type: 'review-threads', revision: 'a'.repeat(64), selectedId: 'text', threads: [{
+    id: 'text', name: 'Santi', body: 'Selected line', initial: 'S', color: '#555', selector: 'p', quote: 'First',
+    markup: { version: 1, viewport: { width: 402, height: 566 }, marks: [{ kind: 'rect', x: 25, y: 110, width: 50, height: 10 }] },
+  }] }); b.flush();
+  assert.equal(b.saved.children[0].getAttribute('x'), 25);
+  assert.equal(b.saved.children[0].getAttribute('y'), 110);
 });
