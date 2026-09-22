@@ -18,16 +18,26 @@ if (!/^[a-z0-9-]{22,160}$/.test(url.pathname.slice(1)) || url.search || url.hash
 const directory = join(homedir(), '.config/docs-review', createHash('sha256').update(reviewUrl).digest('hex').slice(0, 20));
 await mkdir(directory, { recursive: true, mode: 0o700 });
 const configPath = join(directory, 'config.json'), pidPath = join(directory, 'relay.pid');
+let previous;
 try {
-  const pid = Number(await readFile(pidPath, 'utf8')), previous = JSON.parse(await readFile(configPath, 'utf8'));
+  const pid = Number(await readFile(pidPath, 'utf8'));
+  previous = JSON.parse(await readFile(configPath, 'utf8'));
   process.kill(pid, 0);
   if (previous.expiresAt > Date.now()) {
     if ((previous.harness || 't3') !== harness || (previous.sessionId || previous.threadId) !== sessionId) throw Error('This review already has a relay for another session. Stop that relay before reconnecting.');
     console.log(JSON.stringify({ connected: true, pid, expiresAt: new Date(previous.expiresAt).toISOString(), configPath }));
     process.exit(0);
   }
+  // An expired watcher can still be finishing its last tick. Do not run two relays at once.
+  for (let attempt = 0; attempt < 175; attempt++) {
+    try { process.kill(pid, 0); }
+    catch (error) { if (error.code === 'ESRCH') break; throw error; }
+    if (attempt === 174) throw Error('The previous review relay is still stopping. Retry after it exits.');
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
 } catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ESRCH') throw error; }
-const config = { reviewUrl, harness, sessionId, relayId: randomUUID(), uploadToken: process.env.DOCS_UPLOAD_TOKEN, expiresAt: Date.now() + 4 * 60 * 60_000 - 5000 };
+const sameSession = (previous?.harness || 't3') === harness && (previous?.sessionId || previous?.threadId) === sessionId;
+const config = { reviewUrl, harness, sessionId, relayId: sameSession ? previous.relayId : randomUUID(), uploadToken: process.env.DOCS_UPLOAD_TOKEN, expiresAt: Date.now() + 4 * 60 * 60_000 - 5000 };
 if (harness === 't3') {
   const t3Home = process.env.T3CODE_HOME || join(homedir(), '.t3');
   const runtime = JSON.parse(await readFile(join(t3Home, 'userdata/server-runtime.json'), 'utf8'));

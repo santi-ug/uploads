@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { tick, deliveryCommand, feedbackMessage, startCodexTurn } from '../scripts/review-agent.mjs';
 const config = { reviewUrl: 'http://localhost:8787/doc', t3Origin: 'http://localhost:3773', threadId: 'thread', relayId: 'relay', t3Token: 'private', uploadToken: 'owner' };
-const delivery = { id: 'batch', created_at: 1000, comments: [{ body: 'Shorten this paragraph.' }] };
+const delivery = { id: 'batch', created_at: 1000, comments: [{ id: 'comment-one', body: 'Shorten this paragraph.' }] };
 const thread = () => ({ id: 'thread', messages: [], session: { status: 'ready' }, latestTurn: { state: 'completed' }, runtimeMode: 'approval-required', interactionMode: 'default' });
 
 test('relay waits while busy, preserves permissions, and uses stable IDs on retry', async () => {
@@ -44,6 +44,14 @@ test('relay never acknowledges a failed dispatch or refreshes its lease when T3 
   await assert.rejects(tick(config, async () => { count++; throw Error('T3 unavailable'); }), /T3 unavailable/);
   assert.equal(count, 1);
 });
+test('feedback prompt points to exact IDs without embedding large annotations', () => {
+  const large = { id: 'comment-two', markup: 'x'.repeat(96_000) };
+  const message = feedbackMessage({ ...delivery, comments: [large] }, config.reviewUrl);
+  assert.match(message, /comment-two/);
+  assert.match(message, /\/comments/);
+  assert.equal(message.includes(large.markup), false);
+  assert.ok(message.length < 2000);
+});
 
 test('Codex resumes the exact session and acknowledges only after turn start', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'review-agent-'));
@@ -72,7 +80,7 @@ test('Claude waits for its exact background session and does not acknowledge a f
     let state = 'busy', fail = false;
     const request = async (url) => { calls.push(url); return url.endsWith('/agent') ? { delivery } : {}; };
     const run = async (executable, args, options) => {
-      if (args[0] === 'agents') return { stdout: JSON.stringify([{ sessionId: cli.sessionId, cwd: cli.sessionCwd, kind: 'background', state }]) };
+      if (args[0] === 'agents') return { stdout: JSON.stringify([{ id: cli.sessionId.slice(0, 8), sessionId: cli.sessionId, cwd: cli.sessionCwd, kind: 'background', state }]) };
       calls.push({ executable, args, options });
       if (fail) throw Error('resume failed');
       return { stdout: 'backgrounded · 12345678' };
@@ -119,4 +127,22 @@ test('Codex rejects a resume that starts a different thread', async () => {
   };
   await assert.rejects(startCodexTurn({ sessionId: 'exact-session', sessionCwd: '/project' }, 'feedback', launch), /different session/);
   assert.equal(killed, true);
+});
+test('Codex ignores turn.started until its exact thread ID arrives', async () => {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough(); child.stderr = new PassThrough();
+  child.kill = () => { setImmediate(() => child.emit('exit', 0)); };
+  const launch = () => {
+    setImmediate(() => child.stdout.write(JSON.stringify({ type: 'turn.started' }) + '\n'));
+    return child;
+  };
+  let accepted = false;
+  const start = startCodexTurn({ sessionId: 'exact-session', sessionCwd: '/project' }, 'feedback', launch).then(() => { accepted = true; });
+  await new Promise(setImmediate);
+  assert.equal(accepted, false);
+  child.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'exact-session' }) + '\n');
+  child.stdout.write(JSON.stringify({ type: 'turn.started' }) + '\n');
+  await start;
+  assert.equal(accepted, true);
+  child.emit('exit', 0);
 });

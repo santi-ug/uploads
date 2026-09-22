@@ -3,7 +3,8 @@
 Save submits the open comment draft, when complete, then queues unsubmitted posted
 comments and replies. A draft needs a name and a description; drawings alone cannot
 say what should change. Post still stores a comment without starting work. Refresh
-still fetches comments. Save shows progress, queued, accepted, and offline states.
+still fetches comments. An empty Save reports no new feedback. Save shows progress,
+queued, accepted, and offline states.
 
 A local relay connects one document to one exact agent session. It polls every two
 seconds and sends saved feedback through that harness: T3's authenticated turn API,
@@ -12,7 +13,9 @@ working directory. `codex queue` alone does not wake an idle session. Claude wai
 until its background session finishes its current turn, stops the completed service,
 then resumes the same session ID. Otherwise Claude starts a copy. T3 keeps the
 conversation's permission and interaction modes. “Sent to your agent” means the
-harness accepted the feedback, not that edits finished.
+harness accepted the feedback, not that edits finished. The wake-up message names
+only the saved comment IDs. The agent reads their full text and drawings from the
+public `/comments` endpoint, keeping large annotations out of CLI arguments.
 
 The relay must run on the Mac hosting the selected session. The browser never receives
 owner or harness credentials and cannot choose another session. Comments remain untrusted data,
@@ -39,7 +42,8 @@ review connection, then reports the relay PID and expiry. On macOS, T3 Code and 
 Code Nightly are supported; otherwise set `T3_CLI` to its executable.
 
 The watch and any T3 credential expire after four hours. Reconnecting an active watch
-for the same conversation reuses it; restart after expiry to reconnect. Stop only
+for the same conversation reuses it; restart after expiry to reconnect. The connector
+reuses the relay ID for that same session so a fresh lease does not block it. Stop only
 the reported relay PID to end the watch early. A missing heartbeat marks the relay
 offline after 30 seconds. The relay does not launch itself on reboot. Expiry, a
 sleeping Mac, a stopped agent host, or a stopped dev server prevents automatic pickup; feedback

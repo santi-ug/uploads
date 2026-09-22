@@ -287,6 +287,10 @@
     if (!persistent) toastTimer = setTimeout(() => { node.hidden = true; }, 6000);
   }
   function showDelivery(result) {
+    if (!result.delivery) {
+      toast(deliveryId ? 'Saved. Earlier feedback is still queued.' : 'No new feedback to send.', Boolean(deliveryId));
+      return;
+    }
     deliveryId = result.delivery?.status === 'queued' ? result.delivery.id : null;
     if (deliveryId) toast(result.connected ? 'Saved. Queued for your agent.' : 'Saved. Waiting for the agent to reconnect.', true);
     else toast(result.delivery ? 'Sent to your agent.' : 'No new feedback to send.');

@@ -119,3 +119,9 @@ test('Save preserves incomplete drafts and reports an offline agent without clai
   assert.equal(v.node('save-notice').textContent, 'No agent is connected.');
   assert.equal(v.node('save-notice').hidden, false);
 });
+test('an empty Save does not claim that earlier feedback was sent again', async () => {
+  const v = viewer(url => url.endsWith('/dispatch') ? { ok: true, json: async () => ({ connected: true, delivery: null }) } : null);
+  await new Promise(setImmediate); v.message({ type: 'review-ready' });
+  v.node('save').click(); await new Promise(setImmediate);
+  assert.equal(v.node('save-notice').textContent, 'No new feedback to send.');
+});

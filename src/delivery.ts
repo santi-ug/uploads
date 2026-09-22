@@ -30,7 +30,9 @@ export async function saveFeedback(request: Request, db: D1Database, slug: strin
     db.prepare(`UPDATE comments SET delivery_id=? WHERE slug=? AND delivery_id IS NULL
       AND id IN (SELECT value FROM json_each((SELECT comment_ids FROM review_deliveries WHERE id=? AND slug=?)))`).bind(id, slug, id, slug),
   ])
-  return Response.json(await deliveryStatus(db, slug))
+  const status = await deliveryStatus(db, slug)
+  const delivery = await db.prepare('SELECT id,status,created_at FROM review_deliveries WHERE id=? AND slug=?').bind(id, slug).first<Delivery>()
+  return Response.json({ connected: status.connected, delivery })
 }
 /** Only an owner-authorized, document-bound relay can claim feedback or acknowledge delivery. */
 export async function agentDelivery(request: Request, db: D1Database, slug: string, review: Review, id: string, token: string) {
