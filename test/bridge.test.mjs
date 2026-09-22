@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 // Exercise the shipped bridge's message/pointer protocol without a browser dependency.
 function bridge() {
   const listeners = new Map(), messages = [];
+  let focusCalls = 0;
   const node = () => ({ style: {}, hidden: true, append() {}, replaceChildren() {}, setAttribute() {},
     attachShadow: node, addEventListener() {}, setPointerCapture() {}, hasPointerCapture: () => false,
     getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0 }) });
@@ -15,7 +16,7 @@ function bridge() {
     scrollIntoView() {}, getBoundingClientRect: () => ({ left: 10, top: 100 + i * 100, width: 100, height: 20 }) }));
   const page = { children: paragraphs }; paragraphs.forEach(p => { p.parentElement = page; });
   const context = { parent, reviewRevision: 'a'.repeat(64), innerWidth: 402, innerHeight: 566,
-    scrollX: 0, scrollY: 0, requestAnimationFrame: () => 1, setTimeout, clearTimeout,
+    scrollX: 0, scrollY: 0, requestAnimationFrame: () => 1, setTimeout, clearTimeout, focus: () => { focusCalls++; },
     addEventListener: on, document: { createElement: node, createElementNS: node,
       body: page, elementsFromPoint: (_x, y) => [paragraphs[y >= 200 ? 1 : 0]], querySelector: () => paragraphs[0],
       documentElement: node(), title: 'Fixture', addEventListener: on } };
@@ -26,8 +27,15 @@ function bridge() {
     composedPath: () => [], preventDefault() {}, stopImmediatePropagation() {} });
   const tool = value => send({ type: 'review-tool', tool: value, allowed: true });
   const latest = () => messages.findLast(message => message.type === 'review-markup');
-  return { send, pointer, tool, latest, emit, messages };
+  return { send, pointer, tool, latest, emit, messages, focusCalls: () => focusCalls };
 }
+
+test('drawing focuses the iframe so a following Enter reaches this document, not the parent', () => {
+  const b = bridge(); b.tool('rect');
+  assert.equal(b.focusCalls(), 0);
+  b.pointer('pointerdown', 10, 10); b.pointer('pointermove', 50, 50); b.pointer('pointerup', 50, 50);
+  assert.equal(b.focusCalls(), 1, 'preventDefault on drawing pointerdown blocks the browser\'s own focus transfer');
+});
 
 test('erase has reversible history and redo preserves the original viewport', () => {
   const b = bridge(); b.tool('ellipse');

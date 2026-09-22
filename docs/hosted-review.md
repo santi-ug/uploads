@@ -116,3 +116,12 @@ approval, not the user:
 Rollback the Worker to its previous version if verification fails. Keep D1 intact
 so comments survive rollback; roll back the CLI/skill activation together. Existing
 document KV values are never rewritten by viewing or reviewing.
+
+## Review controls
+
+The title, header actions, and annotation toolbar use translucent glass surfaces
+above the document. Desktop comments stay visible, with name-based avatars and a
+primary New comment action. Drawing focuses the document so Enter opens the editor
+for the marks just drawn.
+
+[Before](review-page-images/before.png) · [After](review-page-images/after.png)

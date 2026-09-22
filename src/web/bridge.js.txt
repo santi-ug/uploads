@@ -101,7 +101,10 @@
   };
   document.addEventListener('pointerdown', event => {
     if (tool === 'read' || !allowed || event.button !== 0 || ownControl(event)) return;
-    event.preventDefault(); event.stopImmediatePropagation(); const p = point(event);
+    // preventDefault suppresses the browser's normal click-into-iframe focus
+    // transfer, so a keyboard Enter right after drawing would otherwise land
+    // on the parent page instead of here.
+    event.preventDefault(); event.stopImmediatePropagation(); focus(); const p = point(event);
     if (tool === 'erase') {
       const index = marks.findLastIndex(mark => { const b = bounds(mark); return p.x >= b.x - 8 && p.x <= b.x + b.width + 8 && p.y >= b.y - 8 && p.y <= b.y + b.height + 8; });
       if (index >= 0) { remember(); marks = marks.filter((_, i) => i !== index); changed(); } return;
