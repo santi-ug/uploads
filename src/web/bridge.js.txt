@@ -1,17 +1,21 @@
 (() => {
   'use strict';
+  // Document-space overlays move with native scrolling, including compositor-only scroll frames.
   const host = document.createElement('div');
-  host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none';
+  host.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:0;z-index:2147483647;pointer-events:none';
   const shadow = host.attachShadow({ mode: 'closed' }), style = document.createElement('style');
-  style.textContent = ':host{color-scheme:light dark}svg{position:absolute;inset:0;width:100%;height:100%;overflow:hidden}button{position:absolute;pointer-events:auto;min-height:44px;padding:8px 14px;border:0;border-radius:8px;background:#171717;color:white;font:14px system-ui;box-shadow:0 0 0 1px #fff5,0 4px 18px #0003;cursor:pointer}button:focus-visible{outline:3px solid #85adff;outline-offset:3px}[hidden]{display:none!important}@media(prefers-color-scheme:dark){button{background:white;color:black}}';
+  style.textContent = ':host{color-scheme:light dark}svg{position:absolute;top:0;left:0;width:1px;height:1px;overflow:visible}button{position:absolute;pointer-events:auto;min-height:44px;padding:8px 14px;border:0;border-radius:8px;background:#171717;color:white;font:14px system-ui;box-shadow:0 0 0 1px #fff5,0 4px 18px #0003;cursor:pointer}button:focus-visible{outline:3px solid #85adff;outline-offset:3px}[hidden]{display:none!important}@media(prefers-color-scheme:dark){button{background:white;color:black}}';
   const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg'); svg.setAttribute('aria-hidden', 'true');
   const action = document.createElement('button'); action.textContent = 'Comment'; action.hidden = true;
   const savedSvg = document.createElementNS(ns, 'svg'); savedSvg.setAttribute('aria-hidden', 'true');
   const pins = document.createElement('div');
   style.textContent += '.pin{width:28px;height:28px;min-height:28px;padding:0;border:2px solid white;border-radius:50% 50% 50% 4px;background:var(--pin-color);color:white;font:600 10px system-ui;box-shadow:0 1px 4px #0004}.pin[aria-expanded=true]{outline:2px solid #2563eb;outline-offset:2px}.pin:active{transform:scale(.95)}@media(pointer:coarse){.pin:before{content:"";position:absolute;inset:-8px}}';
-  shadow.append(style, savedSvg, svg, pins, action); document.documentElement.append(host);
+  const capture = document.createElement('div');
+  capture.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:-1';
+  shadow.append(style, savedSvg, svg, pins, action, capture); document.documentElement.append(host);
   let tool = 'read', allowed = false, replay = false, marks = [], undo = [], redo = [], viewport = null;
-  let shortcuts = [], threads = [], selectedThread = null, threadKey = '';
+  let shortcuts = [], threads = [], selectedThread = null, threadKey = '', savedDirty = true;
+  let selectedAnchor = null;
   const pinNodes = new Map();
   let highlighted = null;
   let active = null, pending = null, quote = '', selector = '', frame = 0, timer;
@@ -50,10 +54,10 @@
   function drawMark(mark, layer, opacity) {
     let node;
     if (mark.kind === 'stroke') {
-      node = document.createElementNS(ns, 'polyline'); node.setAttribute('points', mark.points.map(p => `${p.x - scrollX},${p.y - scrollY}`).join(' '));
+      node = document.createElementNS(ns, 'polyline'); node.setAttribute('points', mark.points.map(p => `${p.x},${p.y}`).join(' '));
     } else {
       node = document.createElementNS(ns, mark.kind === 'ellipse' ? 'ellipse' : 'rect');
-      const attributes = mark.kind === 'ellipse' ? { cx: mark.x - scrollX + mark.width / 2, cy: mark.y - scrollY + mark.height / 2, rx: mark.width / 2, ry: mark.height / 2 } : { x: mark.x - scrollX, y: mark.y - scrollY, width: mark.width, height: mark.height };
+      const attributes = mark.kind === 'ellipse' ? { cx: mark.x + mark.width / 2, cy: mark.y + mark.height / 2, rx: mark.width / 2, ry: mark.height / 2 } : { x: mark.x, y: mark.y, width: mark.width, height: mark.height };
       for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
     }
     node.setAttribute('fill', 'none'); node.setAttribute('stroke', '#2563eb'); node.setAttribute('stroke-width', '3'); node.setAttribute('stroke-linecap', 'round'); node.setAttribute('stroke-linejoin', 'round'); node.setAttribute('opacity', opacity); layer.append(node);
@@ -84,7 +88,7 @@
   function focusThread(id) {
     const thread = threads.find(item => item.id === id);
     if (!thread) return;
-    selectedThread = id;
+    selectedThread = id; savedDirty = true;
     const geometry = threadGeometry(thread);
     if (geometry.anchor) scrollTo({ top: Math.max(0, geometry.anchor.y - 120), left: Math.max(0, geometry.anchor.x - innerWidth + 100), behavior: 'instant' });
     paint();
@@ -93,33 +97,40 @@
     if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0; svg.replaceChildren();
-      savedSvg.replaceChildren();
-      for (const thread of threads) {
-        const geometry = threadGeometry(thread);
-        for (const mark of geometry.marks) drawMark(mark, savedSvg, thread.id === selectedThread ? '1' : '.5');
-        const pin = pinNodes.get(thread.id);
-        pin.hidden = !geometry.anchor;
-        pin.setAttribute('aria-expanded', String(thread.id === selectedThread));
-        if (geometry.anchor) {
-          const x = geometry.anchor.x - scrollX, y = geometry.anchor.y - scrollY;
-          pin.style.left = x + 'px'; pin.style.top = y + 'px';
-          if (thread.id === selectedThread) send({ type: 'review-thread-position', id: thread.id, position: { x: x + 36, y } });
+      if (savedDirty) {
+        savedDirty = false; selectedAnchor = null; savedSvg.replaceChildren();
+        for (const thread of threads) {
+          const geometry = threadGeometry(thread);
+          for (const mark of geometry.marks) drawMark(mark, savedSvg, thread.id === selectedThread ? '1' : '.5');
+          const pin = pinNodes.get(thread.id);
+          pin.hidden = !geometry.anchor;
+          pin.setAttribute('aria-expanded', String(thread.id === selectedThread));
+          if (geometry.anchor) {
+            const { x, y } = geometry.anchor;
+            pin.style.left = x + 'px'; pin.style.top = y + 'px';
+            if (thread.id === selectedThread) selectedAnchor = { x: x + 36, y };
+          }
         }
       }
+      positionThread();
       for (const mark of [...marks, ...(highlighted ? [highlighted] : []), ...(active ? [active.mark] : [])]) drawMark(mark, svg, '1');
       action.hidden = replay || !allowed || active !== null || (!marks.length && !pending);
       if (!action.hidden) {
         const b = pending?.rect || bounds(marks[marks.length - 1]);
-        action.style.left = Math.max(8, Math.min(innerWidth - 105, b.x - scrollX + b.width - 90)) + 'px';
-        action.style.top = Math.max(8, Math.min(innerHeight - 52, b.y - scrollY + b.height + 8)) + 'px';
+        action.style.left = Math.max(scrollX + 8, Math.min(scrollX + innerWidth - 105, b.x + b.width - 90)) + 'px';
+        action.style.top = Math.max(scrollY + 8, Math.min(scrollY + innerHeight - 52, b.y + b.height + 8)) + 'px';
       }
     });
+  }
+  // Scrolling is native for marks and pins; only the cross-frame thread needs a position message.
+  function positionThread() {
+    if (selectedAnchor) send({ type: 'review-thread-position', id: selectedThread, position: { x: selectedAnchor.x - scrollX, y: selectedAnchor.y - scrollY } });
   }
   function setTool(next) {
     if (next !== 'read') highlighted = null;
     tool = allowed && !replay && ['select', 'rect', 'ellipse', 'stroke', 'erase'].includes(next) ? next : 'read';
-    host.style.pointerEvents = tool === 'read' ? 'none' : 'auto'; host.style.touchAction = tool === 'read' ? 'auto' : 'none';
-    host.style.cursor = tool === 'read' ? '' : tool === 'erase' ? 'not-allowed' : 'crosshair'; pending = null; active = null; paint();
+    capture.style.pointerEvents = tool === 'read' ? 'none' : 'auto'; capture.style.touchAction = tool === 'read' ? 'auto' : 'none';
+    capture.style.cursor = tool === 'read' ? '' : tool === 'erase' ? 'not-allowed' : 'crosshair'; pending = null; active = null; paint();
   }
   function ready() { send({ type: 'review-ready', title: document.title.slice(0, 200) }); }
   addEventListener('message', event => {
@@ -128,7 +139,7 @@
     if (message.type === 'review-threads' && message.revision === reviewRevision && Array.isArray(message.threads)) {
       const key = JSON.stringify(message.threads);
       if (key !== threadKey) {
-        threadKey = key; threads = message.threads; pins.replaceChildren(); pinNodes.clear();
+        savedDirty = true; threadKey = key; threads = message.threads; pins.replaceChildren(); pinNodes.clear();
         for (const thread of threads) {
           const pin = document.createElement('button'); pin.className = 'pin';
           pin.textContent = thread.initial; pin.style.setProperty('--pin-color', thread.color);
@@ -138,6 +149,7 @@
           pinNodes.set(thread.id, pin); pins.append(pin);
         }
       }
+      if (selectedThread !== message.selectedId) savedDirty = true;
       selectedThread = message.selectedId; paint();
     }
     if (message.type === 'review-focus-thread' && message.revision === reviewRevision) focusThread(message.id);
@@ -228,5 +240,5 @@
     const key = reviewShortcut(event);
     if (allowed && !replay && shortcuts.includes(key)) { event.preventDefault(); send({ type: 'review-shortcut', key }); }
   });
-  addEventListener('scroll', paint, { passive: true }); addEventListener('resize', paint); ready();
+  addEventListener('scroll', positionThread, { passive: true }); addEventListener('resize', () => { savedDirty = true; paint(); }); ready();
 })();

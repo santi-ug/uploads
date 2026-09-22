@@ -39,6 +39,8 @@ function bridge() {
   const flush = () => { while (animationFrames.length) animationFrames.shift()(); };
   const shadow = documentRoot.children[0].shadow;
   return { send, pointer, tool, latest, emit, messages, focusCalls: () => focusCalls, flush, scrolls,
+    scroll(x, y) { context.scrollX = x; context.scrollY = y; emit('scroll', {}); },
+    queuedFrames: () => animationFrames.length, host: documentRoot.children[0],
     saved: shadow.children[1], draft: shadow.children[2], pins: shadow.children[3] };
 }
 
@@ -167,4 +169,25 @@ test('saved layout keeps exact geometry even when its text anchor starts elsewhe
   }] }); b.flush();
   assert.equal(b.saved.children[0].getAttribute('x'), 25);
   assert.equal(b.saved.children[0].getAttribute('y'), 110);
+});
+
+
+test('scroll keeps document-space marks and pins stable without scheduling redraws', () => {
+  const b = bridge(), revision = 'a'.repeat(64);
+  b.send({ type: 'review-threads', revision, selectedId: 'one', threads: [{
+    id: 'one', name: 'Santi', body: 'Pinned', initial: 'S', color: '#555', selector: '', quote: '',
+    markup: { version: 1, viewport: { width: 402, height: 566 }, marks: [{ kind: 'rect', x: 20, y: 700, width: 80, height: 30 }] },
+  }] });
+  b.tool('rect'); b.pointer('pointerdown', 10, 100); b.pointer('pointermove', 50, 150); b.pointer('pointerup', 50, 150); b.flush();
+  const saved = b.saved.children[0], draft = b.draft.children[0], pin = b.pins.children[0];
+  for (let y = 1; y <= 600; y += 5) b.scroll(0, y);
+  assert.equal(b.queuedFrames(), 0, 'scroll must not wait for JS to repaint annotations');
+  b.flush();
+  assert.equal(b.saved.children[0], saved); assert.equal(b.draft.children[0], draft);
+  assert.equal(saved.getAttribute('y'), 700); assert.equal(pin.style.top, '686px');
+  assert.equal(b.messages.findLast(m => m.type === 'review-thread-position').position.y, 90);
+  assert.match(b.host.style.cssText, /position:absolute/);
+  b.pointer('pointerdown', 60, 100); b.pointer('pointermove', 90, 140); b.pointer('pointerup', 90, 140); b.flush();
+  assert.equal(b.saved.children[0], saved, 'drawing a draft must not rebuild saved annotations');
+  assert.equal(b.draft.children[1].getAttribute('y'), 696, 'new marks include the current scroll offset');
 });

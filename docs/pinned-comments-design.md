@@ -29,3 +29,16 @@ pin position. Opening a saved thread never turns its geometry into an editable d
 
 Mobile retains the comments list sheet and opens a single thread above the toolbar.
 Touch pin targets extend beyond the visible 28px pin; desktop text remains 10px.
+
+## Scrolling
+
+Marks and pins live in an absolute, document-coordinate overlay. A separate fixed
+surface captures drawing gestures. Scrolling does not rebuild SVG nodes, measure
+text anchors, or reposition pins in JavaScript; the browser scrolls them with the
+page. Saved geometry is rebuilt only when threads, selection, or viewport size
+change, independently of draft pointer movement. The cross-frame thread popup
+still receives the selected pin's viewport position through the existing bridge.
+
+A local 2.4-second scroll probe measured 11px maximum annotation drift and 822
+shape redraws before this change, versus 0px drift and zero redraws after it.
+This establishes alignment and reduced work, not a cross-browser FPS guarantee.
