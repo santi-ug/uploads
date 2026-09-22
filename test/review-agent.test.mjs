@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tick, deliveryCommand } from '../scripts/review-agent.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { tick, deliveryCommand, feedbackMessage } from '../scripts/review-agent.mjs';
 const config = { reviewUrl: 'http://localhost:8787/doc', t3Origin: 'http://localhost:3773', threadId: 'thread', relayId: 'relay', t3Token: 'private', uploadToken: 'owner' };
 const delivery = { id: 'batch', created_at: 1000, comments: [{ body: 'Shorten this paragraph.' }] };
 const thread = () => ({ id: 'thread', messages: [], session: { status: 'ready' }, latestTurn: { state: 'completed' }, runtimeMode: 'approval-required', interactionMode: 'default' });
@@ -38,4 +41,67 @@ test('relay never acknowledges a failed dispatch or refreshes its lease when T3 
   let count = 0;
   await assert.rejects(tick(config, async () => { count++; throw Error('T3 unavailable'); }), /T3 unavailable/);
   assert.equal(count, 1);
+});
+
+test('Codex resumes the exact session and acknowledges only after turn start', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'review-agent-'));
+  try {
+    const cli = { ...config, harness: 'codex', sessionId: 'exact-session', receiptPath: join(directory, 'accepted') };
+    const calls = [];
+    const request = async (url, _token, body) => {
+      calls.push({ url, body });
+      return url.endsWith('/agent') ? { delivery } : {};
+    };
+    const start = async (target, message) => { calls.push({ target, message }); };
+    assert.equal(await tick(cli, request, undefined, start), 'delivered');
+    assert.deepEqual(calls[1], { target: cli, message: feedbackMessage(delivery, cli.reviewUrl) });
+    assert.equal(calls[2].url, cli.reviewUrl + '/agent/batch');
+    calls.length = 0;
+    assert.equal(await tick(cli, request, undefined, start), 'delivered');
+    assert.equal(calls.some(call => call.target), false, 'failed ack retry must not restart the turn');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('Claude waits for its exact background session and does not acknowledge a failed resume', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'review-agent-'));
+  try {
+    const cli = { ...config, harness: 'claude', sessionId: '12345678-1234-1234-1234-123456789abc', sessionCwd: '/project', receiptPath: join(directory, 'accepted') };
+    const calls = [];
+    let state = 'busy', fail = false;
+    const request = async (url) => { calls.push(url); return url.endsWith('/agent') ? { delivery } : {}; };
+    const run = async (executable, args, options) => {
+      if (args[0] === 'agents') return { stdout: JSON.stringify([{ sessionId: cli.sessionId, cwd: cli.sessionCwd, kind: 'background', state }]) };
+      calls.push({ executable, args, options });
+      if (fail) throw Error('resume failed');
+      return { stdout: 'backgrounded · 12345678' };
+    };
+    assert.equal(await tick(cli, request, run), 'waiting');
+    assert.equal(calls.some(call => typeof call !== 'string'), false);
+    state = 'done'; fail = true; calls.length = 0;
+    await assert.rejects(tick(cli, request, run), /resume failed/);
+    assert.equal(calls.some(call => typeof call === 'string' && call.endsWith('/agent/batch')), false);
+    fail = false; calls.length = 0;
+    assert.equal(await tick(cli, request, run), 'delivered');
+    assert.deepEqual(calls[1].args, ['stop', '12345678']);
+    assert.deepEqual(calls[2].args.slice(0, 3), ['--bg', '--resume', cli.sessionId]);
+    assert.equal(calls[2].options.cwd, cli.sessionCwd);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('Claude rejects and stops a copied session instead of claiming delivery', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'review-agent-'));
+  try {
+    const cli = { ...config, harness: 'claude', sessionId: '12345678-1234-1234-1234-123456789abc', sessionCwd: '/project', receiptPath: join(directory, 'accepted') };
+    const calls = [];
+    const request = async url => { calls.push(url); return url.endsWith('/agent') ? { delivery } : {}; };
+    const run = async (_executable, args) => {
+      calls.push(args);
+      return args[0] === 'agents'
+        ? { stdout: JSON.stringify([{ sessionId: cli.sessionId, cwd: cli.sessionCwd, kind: 'background', state: 'done' }]) }
+        : { stdout: 'backgrounded · deadbeef' };
+    };
+    await assert.rejects(tick(cli, request, run), /different session/);
+    assert.deepEqual(calls.filter(Array.isArray).at(-1), ['stop', 'deadbeef']);
+    assert.equal(calls.includes(cli.reviewUrl + '/agent/batch'), false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
