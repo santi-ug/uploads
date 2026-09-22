@@ -3,7 +3,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-function viewer() {
+function viewer(reply) {
   const revision = 'a'.repeat(64), oldRevision = 'b'.repeat(64), nodes = new Map(), listeners = new Map(), sent = [], requests = [];
   const on = (handlers, type, fn) => handlers.set(type, [...handlers.get(type) || [], fn]);
   const element = () => {
@@ -28,8 +28,8 @@ function viewer() {
       querySelector: node, querySelectorAll: selector => selector === '[data-thread]' ? node('threads').children : [] },
     localStorage: { getItem: () => null, setItem() {} }, crypto: { randomUUID: () => 'fixture-id' },
     addEventListener: (type, fn) => on(listeners, type, fn), matchMedia: () => ({ matches: false }),
-    innerWidth: 1280, innerHeight: 800, HTMLElement: class {}, confirm: () => true, visualViewport: null, setInterval: () => 0,
-    fetch: async (url, options) => { requests.push({ url, options }); return { ok: true, json: async () => ({ revision, open: true, comments }) }; },
+    innerWidth: 1280, innerHeight: 800, HTMLElement: class {}, confirm: () => true, visualViewport: null, setInterval: () => 0, setTimeout: () => 0, clearTimeout() {},
+    fetch: async (url, options) => { requests.push({ url, options }); const response = reply?.(url, options); if (response) return response; return { ok: true, json: async () => ({ revision, open: true, comments }) }; },
   };
   context.document.body.dataset.slug = 'fixture'; node('document').src = '/fixture/content';
   vm.runInNewContext(readFileSync(new URL('../src/web/shortcuts.js.txt', import.meta.url), 'utf8') + '\n' + readFileSync(new URL('../src/web/client.js.txt', import.meta.url), 'utf8'), context);
@@ -93,4 +93,29 @@ test('refresh preserves rows and selection; replying keeps the saved annotation 
   v.node('resolved').checked = true;
   v.node('refresh').click(); await new Promise(setImmediate);
   assert.deepEqual(v.sent.findLast(m => m.type === 'review-threads').threads.map(t => t.id), ['one', 'two', 'general', 'resolved']);
+});
+
+
+test('Save submits a complete draft before dispatch and visibly reports a queued delivery', async () => {
+  const v = viewer(url => url.endsWith('/dispatch') ? { ok: true, json: async () => ({ connected: true, delivery: { id: 'job', status: 'queued' } }) } : null);
+  await new Promise(setImmediate); v.message({ type: 'review-ready' });
+  v.node('new').click(); v.node('name').value = 'Santi'; v.node('body').value = 'Shorten this paragraph.';
+  v.requests.length = 0; v.node('save').click(); v.node('save').click();
+  await new Promise(setImmediate);
+  assert.deepEqual(v.requests.filter(r => r.options?.method === 'POST').map(r => r.url), ['/fixture/comments', '/fixture/dispatch']);
+  assert.equal(v.node('body').value, '');
+  assert.equal(v.node('save-notice').textContent, 'Saved. Queued for your agent.');
+  assert.equal(v.node('save-notice').hidden, false); assert.equal(v.node('save').disabled, false);
+});
+test('Save preserves incomplete drafts and reports an offline agent without claiming delivery', async () => {
+  const v = viewer(url => url.endsWith('/dispatch') ? { ok: false, json: async () => ({ error: 'No agent is connected.' }) } : null);
+  await new Promise(setImmediate); v.message({ type: 'review-ready' });
+  v.node('new').click(); v.node('body').value = 'Keep my draft'; v.node('save').click();
+  await new Promise(setImmediate);
+  assert.equal(v.node('body').value, 'Keep my draft');
+  assert.equal(v.requests.some(r => r.options?.method === 'POST'), false);
+  assert.equal(v.node('compose-popover').hidden, false);
+  v.node('body').value = ''; v.node('save').click(); await new Promise(setImmediate);
+  assert.equal(v.node('save-notice').textContent, 'No agent is connected.');
+  assert.equal(v.node('save-notice').hidden, false);
 });

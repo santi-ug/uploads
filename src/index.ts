@@ -1,3 +1,4 @@
+import { agentDelivery, deliveryStatus, saveFeedback } from './delivery'
 import { authorize, digest, headers, HttpError, readText } from './http'
 import { addComment, findReview, listComments, manageReview, resolveComment } from './reviews'
 import { contentResponse, viewerResponse } from './viewer'
@@ -67,6 +68,11 @@ async function route(request: Request, env: Env): Promise<Response> {
     const response = contentResponse(saved, true, id)
     return request.method === 'HEAD' ? new Response(null, { headers: response.headers }) : response
   }
+  if (action === 'dispatch' && review && !id) {
+    if (request.method === 'GET') return Response.json(await deliveryStatus(env.REVIEWS, slug))
+    if (request.method === 'POST') return saveFeedback(request, env.REVIEWS, slug, review)
+  }
+  if (action === 'agent' && review && request.method === 'POST') return agentDelivery(request, env.REVIEWS, slug, review, id, env.UPLOAD_TOKEN)
   if (action === 'comments' && review) {
     if (!id && request.method === 'GET') return listComments(env.REVIEWS, slug, review, revision)
     if (!id && request.method === 'POST') return addComment(request, env.REVIEWS, slug, revision, env.UPLOAD_TOKEN)
